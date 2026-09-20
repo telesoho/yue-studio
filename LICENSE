@@ -1,0 +1,12 @@
+Apache License 2.0
+
+Copyright 2026 Yue Studio contributors
+
+Licensed under the Apache License, Version 2.0.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Model weights used through this studio remain under their upstream licenses
+(CC BY-NC 4.0 with additional creator permission for YuE2 / SheetSage2 / MERT2).
+abcjs is MIT-licensed; see static/abcjs/NOTICE.txt.

@@ -1,0 +1,15 @@
+.venv/
+.venv*/
+.venv-sheetsage2/
+models/
+outputs/
+runs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.python-version
+.env
+*.egg-info/
+dist/
+build/
+.hf-cache/

@@ -1,0 +1,3 @@
+abcjs-basic-min.js is abcjs 6.4.4, licensed under the MIT License.
+https://github.com/paulrosen/abcjs
+Copyright (c) Paul Rosen and others.
