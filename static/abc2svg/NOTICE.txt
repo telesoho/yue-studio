@@ -1,0 +1,22 @@
+abc2svg
+=======
+
+Source: https://chiselapp.com/user/moinejf/repository/abc2svg
+Version: 1.22.1
+Copyright (C) 2014-2022 Jean-François Moine
+License: LGPL-3.0+
+
+Used by Yue Studio to render jianpu (numbered notation) when the user
+clicks the "简谱" tab in the score viewer. abc2svg is invoked with
+`%%jianpu true` on the voice to switch from Western staff notation to
+JiǎnPǔ.
+
+The original library ships as a single-file bundle that includes the ABC
+parser, the SVG generation engine, and an embedded music font as base64.
+No network fetch is performed at runtime; everything is served from this
+directory.
+
+If you upgrade abc2svg, remember:
+- `%%jianpu` is voice-level and requires abc2svg >= 1.20.8.
+- The bundle's interface suffix is `-1` (we instantiate
+  `new abc2svg.Abc(user)`).

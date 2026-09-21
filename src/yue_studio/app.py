@@ -37,7 +37,7 @@ from .models import (
     required_ready,
     scan_catalog,
 )
-from .paths import models_dir, outputs_dir, sheetsage_python, studio_root, yue_root
+from .paths import models_dir, outputs_dir, sheetsage_python, static_dir, studio_root, yue_root
 from .runner import PipelineSettings, StudioRunner, default_request
 from .score import CHORD_HEADERS, inspect_abc
 from .sheetsage import ensure_sheetsage_env
@@ -894,9 +894,14 @@ def build_app():
 def main(argv=None):
     demo = build_app()
     demo.queue(default_concurrency_limit=1)
+    gr.set_static_paths(paths=[static_dir()])
     demo.launch(
         server_name="127.0.0.1",
-        allowed_paths=[str(studio_root()), str(yue_root()), str(models_dir()), str(outputs_dir())],
+        allowed_paths=[
+            str(studio_root()), str(yue_root()),
+            str(models_dir()), str(outputs_dir()),
+            str(static_dir()),
+        ],
     )
     return 0
 
