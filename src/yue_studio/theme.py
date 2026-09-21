@@ -126,7 +126,7 @@ html, body, .gradio-container {
 
 .score-frame {
   width: 100%;
-  height: 430px;
+  height: 480px;
   border: 0;
   background: #efe6d4;
 }

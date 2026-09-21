@@ -44,3 +44,13 @@ def test_score_html_embeds_abc():
     html = score_html("X:1\nT:t\nK:C\nC")
     assert "score-frame" in html
     assert "X:1" in html
+
+
+def test_score_html_embeds_playback():
+    html = score_html("X:1\nT:t\nK:C\nC")
+    assert 'allow="autoplay"' in html
+    assert "播放" in html
+    assert "试听曲谱" in html
+    assert "setUpAudio" in html
+    assert "AudioContext" in html
+    assert "TimingCallbacks" in html
