@@ -7,16 +7,32 @@ Copyright (C) 2014-2022 Jean-François Moine
 License: LGPL-3.0+
 
 Used by Yue Studio to render jianpu (numbered notation) when the user
-clicks the "简谱" tab in the score viewer. abc2svg is invoked with
-`%%jianpu true` on the voice to switch from Western staff notation to
-JiǎnPǔ.
+clicks the "简谱" tab in the score viewer.
 
-The original library ships as a single-file bundle that includes the ABC
-parser, the SVG generation engine, and an embedded music font as base64.
-No network fetch is performed at runtime; everything is served from this
-directory.
+Files in this directory:
 
-If you upgrade abc2svg, remember:
-- `%%jianpu` is voice-level and requires abc2svg >= 1.20.8.
-- The bundle's interface suffix is `-1` (we instantiate
-  `new abc2svg.Abc(user)`).
+- `abc2svg-1.js` — core ABC parser and SVG engine.
+- `jianpu-1.js` — voice-level `%%jianpu` module. The core does not
+  implement numbered notation; this script must be loaded *after*
+  the core (same interface suffix `-1`).
+
+abc2svg is invoked with `%%jianpu true` on each voice to switch from
+Western staff notation to JiǎnPǔ. YuE ABC uses named voices (`Vocal`,
+`Ins`), so the directive is applied after every `V:` line rather than
+to a dummy `V:1`.
+
+`jianpu-1.js` carries YuE-specific patches on top of 1.22.1:
+number `Z`/`Z4` multi-measure rests (otherwise the SVG prints
+"undefined"), collapse `Vocal Melody` / `Ins Melody` to 唱 / 伴, and
+drop the Western whole-rest ledger that would otherwise sit on the
+numbered 0 (jianpu staffs have no real lines to hang a rest from).
+Full-measure rests stay centered; `staffnonote=2` keeps an all-rest
+Ins staff (伴) visible after those rests are marked invisible to
+`hl_rest`.
+
+No network fetch is performed at runtime; everything is served from
+this directory.
+
+If you upgrade abc2svg, keep the core and the jianpu module on the
+same version. `%%jianpu` requires abc2svg >= 1.20.8. The bundle's
+interface suffix is `-1` (`new abc2svg.Abc(user)`).

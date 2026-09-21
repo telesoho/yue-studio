@@ -257,57 +257,45 @@ function pingPitches(pitches) {
 }
 
 /* ---------- Jianpu (numbered notation) via abc2svg ----------
-   abc2svg ≥ 1.20.8 supports a voice-level `%%jianpu` parameter that
-   renders the same ABC source as numbered notation. We keep an abc2svg
-   Abc instance cached per-page so subsequent switches are instant. */
-let jianpuRenderer = null;
-
-function getJianpuRenderer() {
-  if (jianpuRenderer) return jianpuRenderer;
-  if (typeof abc2svg === "undefined" || !abc2svg.Abc) {
-    return null;
-  }
-  jianpuRenderer = new abc2svg.Abc({
-    img_out: function (svg) { jianpuSvgBuf.push(svg); },
-    errbld: function (sev, msg) { console.warn("abc2svg jianpu:", sev, msg); },
-    errmsg: function (msg) { console.warn("abc2svg jianpu:", msg); },
-    read_file: function () { return ""; },
-  });
-  return jianpuRenderer;
-}
-
-let jianpuSvgBuf = [];
-
+   `%%jianpu` lives in the separate jianpu-1.js module (not the core).
+   It is voice-level, so it must follow each real V: line. YuE ABC uses
+   Vocal/Ins; a dummy V:1 after K: has no notes and crashes the module. */
 function jianpuAbcWithDirective(src) {
-  // Insert `V:1\n%%jianpu true\n` after the K: header line so the voice
-  // declaration precedes the jianpu directive. abc2svg only honors
-  // `%%jianpu` at the voice level (≥ 1.20.8).
-  const lines = src.split(/\r?\n/);
+  const withVoices = String(src).replace(/^(V:.*)$/gm, "$1\n%%jianpu true");
+  if (withVoices !== src) return withVoices;
+  const lines = String(src).split(/\r?\n/);
   let kIdx = -1;
   for (let i = 0; i < lines.length; i++) {
     if (/^K:\s*/.test(lines[i])) { kIdx = i; break; }
   }
-  const injection = "V:1\n%%jianpu true\n";
-  if (kIdx < 0) {
-    return injection + src;
-  }
+  const injection = "%%jianpu true\n";
+  if (kIdx < 0) return injection + src;
   return lines.slice(0, kIdx + 1).join("\n") + "\n"
        + injection
        + lines.slice(kIdx + 1).join("\n");
 }
 
 function renderJianpu() {
-  const renderer = getJianpuRenderer();
-  if (!renderer) {
-    paper.innerHTML = '<div class="jianpu-empty">abc2svg 未能加载，无法渲染简谱。</div>';
+  if (typeof abc2svg === "undefined" || !abc2svg.Abc || !abc2svg.jianpu) {
+    paper.innerHTML = '<div class="jianpu-empty">abc2svg 简谱模块未能加载。</div>';
     return;
   }
-  jianpuSvgBuf = [];
+  const buf = [];
   const src = jianpuAbcWithDirective(abc);
   try {
+    const renderer = new abc2svg.Abc({
+      img_out: function (svg) { buf.push(svg); },
+      errbld: function (sev, msg) { console.warn("abc2svg jianpu:", sev, msg); },
+      errmsg: function (msg) { console.warn("abc2svg jianpu:", msg); },
+      read_file: function () { return ""; },
+    });
     renderer.tosvg("jianpu", src);
   } catch (e) {
     paper.innerHTML = '<div class="jianpu-empty">简谱渲染失败：' + (e && e.message || e) + '</div>';
+    return;
+  }
+  if (!buf.length) {
+    paper.innerHTML = '<div class="jianpu-empty">简谱渲染结果为空。</div>';
     return;
   }
   const tonicLabel = "1=" + (state.tonicLabel || "C");
@@ -318,7 +306,7 @@ function renderJianpu() {
     + '<span class="jp-time">♩=' + tempo + ' · jianpu</span>'
     + '<span class="jp-hint">简谱（abc2svg）</span>'
     + '</div>'
-    + '<div class="jianpu-body">' + jianpuSvgBuf.join("") + '</div>';
+    + '<div class="jianpu-body">' + buf.join("") + '</div>';
 }
 
 function switchScoreMode(mode) {
@@ -501,6 +489,7 @@ _SCORE_DOCUMENT = """<!DOCTYPE html>
   .jianpu-empty { padding:40px; text-align:center; color:#8a7a58; font-size:13px; }
 </style>
 <script src="__ABC2SVG_SRC__" defer></script>
+<script src="__JIANPU_SRC__" defer></script>
 <script>__ABCJS__</script>
 </head>
 <body>
@@ -525,17 +514,21 @@ __PLAYER__
 
 
 def score_html(abc: str, *, abcjs: Path | None = None,
-              abc2svg_src: str = "/gradio_api/file=abc2svg/abc2svg-1.js") -> str:
+              abc2svg_src: str = "/gradio_api/file=static/abc2svg/abc2svg-1.js",
+              abc2svg_jianpu_src: str | None = None) -> str:
     script = ""
     location = abcjs or abcjs_path()
     if location.is_file():
         script = location.read_text(encoding="utf-8")
+    jianpu_src = abc2svg_jianpu_src or abc2svg_src.replace(
+        "abc2svg-1.js", "jianpu-1.js")
     inner = (
         _SCORE_DOCUMENT
         .replace("__PLAYER__", _SCORE_PLAYER_JS)
         .replace("__ABCJS__", script)
         .replace("__ABC__", json.dumps(abc))
         .replace("__ABC2SVG_SRC__", abc2svg_src)
+        .replace("__JIANPU_SRC__", jianpu_src)
     )
     return (
         '<iframe class="score-frame" sandbox="allow-scripts" allow="autoplay" '
