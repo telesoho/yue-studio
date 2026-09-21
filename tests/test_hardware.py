@@ -126,6 +126,8 @@ def test_hardware_html_shows_vram_and_params():
     assert "RTX 4060" in markup
     assert "budget 8 GiB" in markup
     assert "fp8" in markup
+    assert "hw-leds" in markup
+    assert markup.count('class="on"') == 2
     assert "&lt;" in hardware_html(
         HardwareSnapshot((), False, snapshot.recommended, error="<boom>"),
         preset,

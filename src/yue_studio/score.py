@@ -321,25 +321,35 @@ _SCORE_DOCUMENT = """<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8"/>
 <style>
-  html,body { margin:0; background:#efe6d4; color:#1c1610; }
+  html,body { margin:0; background:transparent; color:#1b1712; }
   #transport {
     display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-    padding:8px 12px; background:#e4d8c0; border-bottom:1px solid #cbbd9e;
+    padding:10px 14px;
+    background:
+      radial-gradient(circle at 18% 50%, rgba(255, 122, 69, 0.55) 0%, transparent 22%),
+      radial-gradient(circle at 82% 50%, rgba(192, 132, 252, 0.35) 0%, transparent 22%),
+      linear-gradient(180deg, #2b3148 0%, #1a2030 100%);
+    border:0;
+    border-bottom:1px solid rgba(255, 184, 107, 0.28);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
     font:12px/1.3 "IBM Plex Mono", ui-monospace, monospace;
+    color:#e7eaf3;
   }
   #transport[hidden] { display:none; }
   #transport button {
-    background:#c4a35a; color:#1a140c; border:0; padding:4px 10px;
-    font:12px/1.2 "IBM Plex Mono", ui-monospace, monospace; cursor:pointer;
+    background:#ff7a45; color:#1a0e07; border:0; padding:5px 14px;
+    font:600 12px/1.2 "IBM Plex Mono", ui-monospace, monospace; cursor:pointer;
+    border-radius:6px; letter-spacing:0.04em;
+    box-shadow: 0 2px 8px -2px rgba(255, 122, 69, 0.5);
   }
   #transport button[disabled] { opacity:0.45; cursor:default; }
-  #transport button[aria-pressed="true"] { background:#8d7340; color:#efe6d4; }
-  #clock, #tempo { color:#5c5144; min-width:5.5em; }
-  #hint { color:#8a8073; }
-  #seek { flex:1; min-width:120px; accent-color:#c4a35a; }
-  #paper { padding:10px 14px 18px; min-height:120px; }
+  #transport button[aria-pressed="true"] { background:#e85a25; color:#fff; }
+  #clock, #tempo { color:#c5cee0; min-width:5.5em; font-weight:500; }
+  #hint { color:#8b94ad; }
+  #seek { flex:1; min-width:120px; accent-color:#ff7a45; }
+  #paper { padding:6px 14px 18px; min-height:120px; background:transparent; }
   pre { white-space:pre-wrap; font:13px/1.45 "IBM Plex Mono", ui-monospace, monospace; padding:12px; }
-  svg .abcjs-highlight { fill:#9a2b1f; stroke:#9a2b1f; }
+  svg .abcjs-highlight { fill:#c45c4a; stroke:#c45c4a; }
 </style>
 <script>__ABCJS__</script>
 </head>
@@ -380,7 +390,8 @@ def score_html(abc: str, *, abcjs: Path | None = None) -> str:
 def _empty_score_html(message: str) -> str:
     return (
         '<div class="score-empty">'
-        f'<span>{html.escape(message)}</span></div>'
+        f'<span>{html.escape(message)}</span>'
+        "</div>"
     )
 
 

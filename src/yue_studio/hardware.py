@@ -188,17 +188,33 @@ def hardware_html(snapshot: HardwareSnapshot, preset: HardwarePreset) -> str:
     warning = next((item for item in preset.notes
                     if any(token in item for token in ("OOM", "失败", "不足", "不支持"))), None)
     note = warning or (preset.notes[0] if preset.notes else "按显存选择 YuE2 调用参数。")
+    note_class = "hw-note warn" if warning else "hw-note"
     return (
         '<div class="hw-bar">'
         '<div class="hw-vram">'
         '<span class="hw-k">显存</span>'
         f'<span class="hw-v">{html.escape(vram)}</span>'
+        f'{_vram_leds(snapshot, preset)}'
         f'<span class="hw-gpu">{html.escape(gpu_line)}</span>'
         "</div>"
         f'<p class="hw-params">{html.escape(params)}</p>'
-        f'<p class="hw-note">{html.escape(note)}</p>'
+        f'<p class="{note_class}">{html.escape(note)}</p>'
         "</div>"
     )
+
+
+def _vram_leds(snapshot: HardwareSnapshot, preset: HardwarePreset) -> str:
+    gib = preset.vram_gib
+    if gib is None and snapshot.devices:
+        gpu = _pick_gpu(snapshot.devices, preset.device) or snapshot.devices[0]
+        gib = gpu.vram_gib
+    if not gib:
+        return ""
+    filled = min(6, max(1, int(round(float(gib) / 4.0))))
+    cells = "".join(
+        f'<i class="{"on" if index < filled else "off"}"></i>' for index in range(6)
+    )
+    return f'<span class="hw-leds" aria-hidden="true">{cells}</span>'
 
 
 def _pretty_preset(preset: HardwarePreset) -> HardwarePreset:

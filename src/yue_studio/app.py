@@ -25,12 +25,6 @@ from .invoke import (
     format_invocation,
     status_line,
 )
-from .history import (
-    TABLE_HEADERS as HISTORY_HEADERS,
-    delete_entry,
-    history_table,
-    load_entry,
-)
 from .history import TABLE_HEADERS, delete_entry, history_table, load_entry
 from .jobs import song_id
 from .models import (
@@ -47,7 +41,7 @@ from .paths import models_dir, outputs_dir, sheetsage_python, studio_root, yue_r
 from .runner import PipelineSettings, StudioRunner, default_request
 from .score import CHORD_HEADERS, inspect_abc
 from .sheetsage import ensure_sheetsage_env
-from .theme import CSS
+from .theme import CSS, FORCE_DARK, THEME
 
 RUNNER: StudioRunner | None = None
 SNAPSHOT = None
@@ -640,12 +634,28 @@ def build_app():
     default_device = gpu_items[0][1]
     hw_event_out = []
 
-    with gr.Blocks(title="Yue Studio", css=CSS, theme=gr.themes.Base()) as demo:
+    with gr.Blocks(
+        title="Yue Studio",
+        css=CSS,
+        js=FORCE_DARK,
+        theme=THEME,
+        fill_width=True,
+        elem_id="yue-studio",
+    ) as demo:
         gr.HTML(
             '<div class="studio-head">'
+            '<div class="studio-brand">'
+            '<span class="studio-seal" aria-hidden="true">乐</span>'
+            "<div>"
             "<h1>Yue Studio</h1>"
-            "<p>曲谱 · 和弦 · 翻唱 · 历史 · YuE2 模型与资源</p>"
-            "</div>"
+            "<p>曲谱 · 和弦 · 翻唱 · 历史</p>"
+            "</div></div>"
+            '<div class="studio-tags">'
+            '<span class="studio-tag warm"><span class="dot"></span>本地推理</span>'
+            '<span class="studio-tag"><span class="dot"></span>ABC 工作流</span>'
+            '<span class="studio-tag cool"><span class="dot"></span>实时进度</span>'
+            "</div></div>",
+            elem_classes=["studio-head-wrap"],
         )
         hw_html = gr.HTML(value=hardware_html(snapshot, initial), elem_classes=["hw-bar-wrap"])
         with gr.Row(elem_classes=["hw-controls"]):
@@ -661,7 +671,7 @@ def build_app():
                 label="设备",
                 visible=len(snapshot.devices) > 1,
             )
-        with gr.Accordion("YuE2 参数", open=True, elem_classes=["hw-params-panel"]):
+        with gr.Accordion("YuE2 参数", open=False, elem_classes=["hw-params-panel"]):
             with gr.Row():
                 budget = gr.Number(
                     value=initial.memory_budget_gib, label="显存预算 GiB",
@@ -679,7 +689,7 @@ def build_app():
             )
         hw_inputs = [profile, gpu_device, budget, quantization, offload_ar, vae_core_frames]
         init_hist_rows, init_hist_paths, init_hist_note = history_table()
-        with gr.Tabs() as studio_tabs:
+        with gr.Tabs(elem_classes=["studio-tabs"]) as studio_tabs:
             with gr.Tab("模型与资源", id="models"):
                 env_box = gr.Textbox(label="环境", value=_env_text(), lines=14, elem_id="env-box")
                 catalog = gr.Dataframe(headers=CATALOG_HEADERS, value=_catalog_rows(),
@@ -709,30 +719,43 @@ def build_app():
             with gr.Tab("生成", id="generate"):
                 plan_dir = gr.State(None)
                 request_state = gr.State({})
-                with gr.Row():
-                    style = gr.Textbox(label="style（风格/编制/人声/语种/速度）",
-                                       value=defaults["style"], lines=4)
-                    lyrics = gr.Textbox(label="lyrics（段落标签与歌词）",
-                                        value=defaults["lyrics"], lines=8)
-                with gr.Row():
-                    cot = gr.Radio(["full", "melody", "off"], value=defaults.get("cot", "full"),
-                                   label="cot")
-                    seed = gr.Number(value=defaults.get("seed", 831001), precision=0, label="seed")
-                    identifier = gr.Textbox(value=defaults.get("id", "song"), label="id")
-                extra_abc = gr.Textbox(label="可选外部 ABC（full / melody）", lines=6)
-                with gr.Row():
-                    plan_btn = gr.Button("规划曲谱", variant="primary")
-                    render_btn = gr.Button("合成音频")
-                score_html = gr.HTML(value=_score_outputs("")[0], elem_classes=["staff-panel"])
-                abc_editor = gr.Textbox(label="曲谱 ABC（可编辑；改谱后合成会作为新输入）",
-                                        lines=12, max_lines=30)
-                chords = gr.Dataframe(headers=CHORD_HEADERS, value=empty_chords,
-                                      label="和弦", wrap=True, interactive=False)
-                gen_progress = gr.HTML(value=_progress_markup(), label="进度",
-                                       elem_classes=["job-progress-wrap"])
-                gen_status = gr.Textbox(label="命令 / 参数 / 日志", lines=16, max_lines=40,
-                                        elem_classes=["invoke-log"])
-                gen_audio = gr.Audio(label="音频", type="filepath", interactive=False)
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=5, min_width=320):
+                        style = gr.Textbox(label="style（风格/编制/人声/语种/速度）",
+                                           value=defaults["style"], lines=4)
+                        lyrics = gr.Textbox(label="lyrics（段落标签与歌词）",
+                                            value=defaults["lyrics"], lines=8)
+                        with gr.Row():
+                            cot = gr.Radio(
+                                ["full", "melody", "off"], value=defaults.get("cot", "full"),
+                                label="cot",
+                            )
+                            seed = gr.Number(
+                                value=defaults.get("seed", 831001), precision=0, label="seed",
+                            )
+                            identifier = gr.Textbox(value=defaults.get("id", "song"), label="id")
+                        extra_abc = gr.Textbox(label="可选外部 ABC（full / melody）", lines=4)
+                        with gr.Row():
+                            plan_btn = gr.Button("规划曲谱", variant="primary")
+                            render_btn = gr.Button("合成音频")
+                        gen_progress = gr.HTML(value=_progress_markup(), label="进度",
+                                               elem_classes=["job-progress-wrap"])
+                        gen_audio = gr.Audio(label="音频", type="filepath", interactive=False)
+                        gen_status = gr.Textbox(label="命令 / 参数 / 日志", lines=12, max_lines=32,
+                                                elem_classes=["invoke-log"])
+                    with gr.Column(scale=6, min_width=360):
+                        score_html = gr.HTML(
+                            value=_score_outputs("")[0], elem_classes=["staff-panel"],
+                            padding=False,
+                        )
+                        abc_editor = gr.Textbox(
+                            label="曲谱 ABC（可编辑；改谱后合成会作为新输入）",
+                            lines=10, max_lines=28,
+                        )
+                        chords = gr.Dataframe(
+                            headers=CHORD_HEADERS, value=empty_chords,
+                            label="和弦", wrap=True, interactive=False,
+                        )
                 plan_btn.click(
                     plan_song,
                     [style, lyrics, cot, seed, identifier, extra_abc, *hw_inputs],
@@ -751,32 +774,43 @@ def build_app():
 
             with gr.Tab("翻唱", id="cover"):
                 transcribe_dir = gr.State(None)
-                audio_in = gr.Audio(label="源音频", type="filepath", sources=["upload"])
-                with gr.Row():
-                    abc_file = gr.File(label="或上传 ABC", file_types=[".abc", ".txt"])
-                    cover_task = gr.Radio(
-                        ["旋律（推荐翻唱）", "完整含和弦"],
-                        value="旋律（推荐翻唱）",
-                        label="转谱任务",
-                    )
-                    keep_chords = gr.Checkbox(False, label="保留原和弦（cot=full）")
-                cover_abc = gr.Textbox(label="曲谱 ABC", lines=10)
-                transcribe_btn = gr.Button("转谱 / 载入 ABC", variant="primary")
-                cover_score = gr.HTML(value=_score_outputs("")[0], elem_classes=["staff-panel"])
-                cover_chords = gr.Dataframe(headers=CHORD_HEADERS, value=empty_chords,
-                                            label="和弦", wrap=True, interactive=False)
-                cover_progress = gr.HTML(value=_progress_markup(), label="进度",
-                                         elem_classes=["job-progress-wrap"])
-                cover_status = gr.Textbox(label="命令 / 参数 / 日志", lines=16, max_lines=40,
-                                          elem_classes=["invoke-log"])
-                with gr.Row():
-                    cover_style = gr.Textbox(label="目标 style", value=defaults["style"], lines=3)
-                    cover_lyrics = gr.Textbox(label="目标 lyrics", value=defaults["lyrics"], lines=8)
-                with gr.Row():
-                    cover_seed = gr.Number(value=defaults.get("seed", 831001), precision=0, label="seed")
-                    cover_id = gr.Textbox(value="cover", label="id")
-                cover_btn = gr.Button("生成翻唱")
-                cover_audio = gr.Audio(label="翻唱音频", type="filepath", interactive=False)
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=5, min_width=320):
+                        audio_in = gr.Audio(label="源音频", type="filepath", sources=["upload"])
+                        with gr.Row():
+                            abc_file = gr.File(label="或上传 ABC", file_types=[".abc", ".txt"])
+                            cover_task = gr.Radio(
+                                ["旋律（推荐翻唱）", "完整含和弦"],
+                                value="旋律（推荐翻唱）",
+                                label="转谱任务",
+                            )
+                        keep_chords = gr.Checkbox(False, label="保留原和弦（cot=full）")
+                        transcribe_btn = gr.Button("转谱 / 载入 ABC", variant="primary")
+                        cover_style = gr.Textbox(label="目标 style", value=defaults["style"], lines=3)
+                        cover_lyrics = gr.Textbox(label="目标 lyrics", value=defaults["lyrics"], lines=6)
+                        with gr.Row():
+                            cover_seed = gr.Number(
+                                value=defaults.get("seed", 831001), precision=0, label="seed",
+                            )
+                            cover_id = gr.Textbox(value="cover", label="id")
+                        cover_btn = gr.Button("生成翻唱")
+                        cover_progress = gr.HTML(value=_progress_markup(), label="进度",
+                                                 elem_classes=["job-progress-wrap"])
+                        cover_audio = gr.Audio(label="翻唱音频", type="filepath", interactive=False)
+                        cover_status = gr.Textbox(
+                            label="命令 / 参数 / 日志", lines=10, max_lines=28,
+                            elem_classes=["invoke-log"],
+                        )
+                    with gr.Column(scale=6, min_width=360):
+                        cover_score = gr.HTML(
+                            value=_score_outputs("")[0], elem_classes=["staff-panel"],
+                            padding=False,
+                        )
+                        cover_abc = gr.Textbox(label="曲谱 ABC", lines=10)
+                        cover_chords = gr.Dataframe(
+                            headers=CHORD_HEADERS, value=empty_chords,
+                            label="和弦", wrap=True, interactive=False,
+                        )
                 transcribe_btn.click(
                     transcribe_cover,
                     [audio_in, abc_file, cover_abc, cover_task, *hw_inputs],
@@ -807,16 +841,21 @@ def build_app():
                     hist_load = gr.Button("载入到生成页", variant="primary")
                     hist_delete = gr.Button("删除")
                     hist_confirm = gr.Checkbox(False, label="确认删除本地目录")
-                hist_audio = gr.Audio(label="音频", type="filepath", interactive=False)
-                hist_score = gr.HTML(value=_score_outputs("")[0], elem_classes=["staff-panel"])
-                hist_chords = gr.Dataframe(
-                    headers=CHORD_HEADERS, value=empty_chords,
-                    label="和弦", wrap=True, interactive=False,
-                )
-                with gr.Row():
-                    hist_style = gr.Textbox(label="style", lines=3, interactive=False)
-                    hist_lyrics = gr.Textbox(label="lyrics", lines=8, interactive=False)
-                hist_info = gr.Textbox(label="路径", lines=3, interactive=False)
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=5, min_width=320):
+                        hist_audio = gr.Audio(label="音频", type="filepath", interactive=False)
+                        hist_style = gr.Textbox(label="style", lines=3, interactive=False)
+                        hist_lyrics = gr.Textbox(label="lyrics", lines=8, interactive=False)
+                        hist_info = gr.Textbox(label="路径", lines=3, interactive=False)
+                    with gr.Column(scale=6, min_width=360):
+                        hist_score = gr.HTML(
+                            value=_score_outputs("")[0], elem_classes=["staff-panel"],
+                            padding=False,
+                        )
+                        hist_chords = gr.Dataframe(
+                            headers=CHORD_HEADERS, value=empty_chords,
+                            label="和弦", wrap=True, interactive=False,
+                        )
                 hist_refresh.click(
                     refresh_history, None, [hist_table, hist_paths, hist_note],
                 )
