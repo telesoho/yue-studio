@@ -1,8 +1,9 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from yue_studio.jobs import song_id
+from yue_studio.jobs import new_job_dir, song_id
 from yue_studio.sheetsage import (
     TORCH_CPU_INDEX,
     TORCH_CUDA_INDEX,
@@ -12,6 +13,7 @@ from yue_studio.sheetsage import (
     install_hub_command,
     install_requirements_command,
     install_torch_command,
+    run_transcribe,
     transcribe_command,
 )
 
@@ -22,12 +24,15 @@ def test_transcribe_command_offline_for_local_model(tmp_path: Path):
     audio = tmp_path / "song.wav"
     output = tmp_path / "out"
     model = tmp_path / "SheetSage2"
+    base = tmp_path / "MERT-v2-FullSong"
     command = transcribe_command(python, script, audio, output, task="melody-full",
-                                 model=model, device="cuda", dtype="bf16", offline=True)
+                                 model=model, device="cuda", dtype="bf16", offline=True,
+                                 base_model=base)
     assert command[:5] == [str(python), str(script), str(audio), "--output", str(output)]
     assert "--task" in command and "melody-full" in command
     assert "--offline" in command
     assert str(model) in command
+    assert command[command.index("--base-model") + 1] == str(base)
 
 
 def test_missing_sheetsage_python(tmp_path: Path):
@@ -123,3 +128,82 @@ def test_song_id_sanitizes():
     assert song_id("city_lights") == "city_lights"
     assert song_id("你好!") == "song" or song_id("cover-1") == "cover-1"
     assert song_id("cover-1") == "cover-1"
+
+
+def test_run_transcribe_requires_ffmpeg(tmp_path: Path, monkeypatch):
+    python = tmp_path / "python.exe"
+    python.write_bytes(b"")
+    script = tmp_path / "transcribe.py"
+    script.write_text("", encoding="utf-8")
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"x")
+    output = tmp_path / "out"
+    monkeypatch.setattr(
+        "yue_studio.sheetsage.ensure_transcribe_ready", lambda **kwargs: (python, script),
+    )
+    monkeypatch.setattr("yue_studio.sheetsage.ffmpeg_bin", lambda: None)
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("should not invoke SheetSage2 without ffmpeg")
+
+    monkeypatch.setattr("subprocess.run", fail_run)
+    with pytest.raises(RuntimeError, match="FFmpeg"):
+        run_transcribe(audio, output, python=python, script=script, model=tmp_path / "SheetSage2")
+
+
+def test_run_transcribe_clears_studio_job_dir(tmp_path: Path, monkeypatch):
+    python = tmp_path / "python.exe"
+    python.write_bytes(b"")
+    script = tmp_path / "transcribe.py"
+    script.write_text("", encoding="utf-8")
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"x")
+    output = new_job_dir(tmp_path, "transcribe", "cover")
+    assert output.is_dir()
+    seen = {}
+
+    def fake_ready(**kwargs):
+        return python, script
+
+    def fake_run(command, **kwargs):
+        seen["command"] = list(command)
+        dest = Path(command[command.index("--output") + 1])
+        assert not dest.exists()
+        dest.mkdir()
+        (dest / "score.abc").write_text("X:1\nK:C\nC\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("yue_studio.sheetsage.ensure_transcribe_ready", fake_ready)
+    monkeypatch.setattr("yue_studio.sheetsage.ffmpeg_bin", lambda: r"C:\bin\ffmpeg.exe")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    mert = tmp_path / "MERT-v2-FullSong"
+    score = run_transcribe(
+        audio, output, python=python, script=script,
+        model=tmp_path / "SheetSage2", base_model=mert,
+    )
+    assert score.is_file()
+    assert str(output) in seen["command"]
+    assert seen["command"][seen["command"].index("--base-model") + 1] == str(mert)
+
+
+def test_run_transcribe_rejects_nonempty_output(tmp_path: Path, monkeypatch):
+    python = tmp_path / "python.exe"
+    python.write_bytes(b"")
+    script = tmp_path / "transcribe.py"
+    script.write_text("", encoding="utf-8")
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"x")
+    output = tmp_path / "occupied"
+    output.mkdir()
+    (output / "keep.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(
+        "yue_studio.sheetsage.ensure_transcribe_ready", lambda **kwargs: (python, script),
+    )
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("should not invoke SheetSage2")
+
+    monkeypatch.setattr("subprocess.run", fail_run)
+    with pytest.raises(FileExistsError, match="Nonempty output"):
+        run_transcribe(audio, output, python=python, script=script, model=tmp_path / "SheetSage2")
+    assert (output / "keep.txt").is_file()

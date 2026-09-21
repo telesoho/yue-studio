@@ -25,11 +25,25 @@ READY_IMPORT = "import torch, transformers, huggingface_hub"
 _PROVISION_LOCK = threading.Lock()
 
 
+def ffmpeg_bin() -> str | None:
+    return shutil.which("ffmpeg")
+
+
+def require_ffmpeg() -> str:
+    path = ffmpeg_bin()
+    if not path:
+        raise RuntimeError("转谱需要本机 FFmpeg。请安装 FFmpeg 并把它加入 PATH 后重试。")
+    return path
+
+
 def transcribe_command(python: Path, script: Path, audio: Path, output: Path, *,
                        task="melody-full", model="m-a-p/SheetSage2",
-                       device="cuda", dtype="bf16", offline=False) -> list[str]:
+                       device="cuda", dtype="bf16", offline=False,
+                       base_model: str | Path | None = None) -> list[str]:
     command = [str(python), str(script), str(audio), "--output", str(output),
                "--task", task, "--model", str(model), "--device", device, "--dtype", dtype]
+    if base_model:
+        command.extend(["--base-model", str(base_model)])
     if offline:
         command.append("--offline")
     return command
@@ -153,21 +167,27 @@ def ensure_transcribe_ready(*, python: Path | None = None, script: Path | None =
 def run_transcribe(audio: Path, output: Path, *, task="melody-full",
                    model: str | Path = "m-a-p/SheetSage2", device="cuda",
                    dtype="bf16", python: Path | None = None, script: Path | None = None,
+                   base_model: str | Path | None = None,
                    timeout: int | None = None, on_status=None, run=None) -> Path:
+    audio, output = Path(audio), _clear_empty_output(output)
+    if not audio.is_file():
+        raise FileNotFoundError(audio)
+    ffmpeg = require_ffmpeg()
     python, script = ensure_transcribe_ready(
         python=python, script=script, model_dir=Path(model) if Path(model).is_dir() else None,
         cuda=(device == "cuda"), on_status=on_status, run=run,
     )
-    audio, output = Path(audio), Path(output)
-    if not audio.is_file():
-        raise FileNotFoundError(audio)
-    command = transcribe_command(python, script, audio, output, task=task, model=model,
-                                 device=device, dtype=dtype, offline=Path(model).is_dir())
+    command = transcribe_command(
+        python, script, audio, output, task=task, model=model,
+        device=device, dtype=dtype, offline=Path(model).is_dir(),
+        base_model=base_model,
+    )
     from .invoke import format_command
     if on_status:
         on_status("命令: " + format_command(command))
         on_status("SheetSage2 转谱中…")
     env = os.environ.copy()
+    env["PATH"] = str(Path(ffmpeg).parent) + os.pathsep + env.get("PATH", "")
     env["PYTHONPATH"] = str(script.parent) + os.pathsep + env.get("PYTHONPATH", "")
     completed = subprocess.run(command, cwd=str(yue_root()), env=env, check=False,
                                capture_output=True, text=True, encoding="utf-8",
@@ -184,6 +204,17 @@ def run_transcribe(audio: Path, output: Path, *, task="melody-full",
     if not score.is_file():
         raise FileNotFoundError("转谱完成但没有 score.abc")
     return score
+
+
+def _clear_empty_output(output: Path) -> Path:
+    """Leave a non-existent path for transcribe.py's exclusive mkdir."""
+    output = Path(output)
+    if not output.exists():
+        return output
+    if not output.is_dir() or any(output.iterdir()):
+        raise FileExistsError(f"Nonempty output {output}")
+    output.rmdir()
+    return output
 
 
 def _requirements_path(model_dir: Path | None) -> Path:

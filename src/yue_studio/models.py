@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import importlib.metadata
+import logging
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,11 +73,11 @@ def _dir_size(path: Path) -> int:
 def _looks_complete(path: Path, kind: str) -> bool:
     if not path.is_dir() or not (path / "config.json").is_file():
         return False
-    if kind in {"yue2", "vae"}:
+    if kind in {"yue2", "vae", "mert"}:
         return ((path / "model.safetensors").is_file()
                 or (path / "model.safetensors.index.json").is_file()
                 or any(path.glob("model-*.safetensors")))
-    return any(path.glob("*.safetensors")) or any(path.glob("*.bin")) or any(path.glob("*.py"))
+    return any(path.glob("*.safetensors")) or any(path.glob("*.bin"))
 
 
 def hub_cache_root() -> Path:
@@ -127,6 +129,8 @@ def locate(spec: ResourceSpec, *, studio: Path | None = None, yue: Path | None =
     hint = "可在本页下载到 studio/models/"
     if spec.kind == "sheetsage":
         hint += "。翻唱转谱时会自动配置独立 Python 3.11 环境。"
+    elif spec.kind == "mert":
+        hint += "。SheetSage2 离线转谱需要这份父编码器权重。"
     return ResourceStatus(spec, False, None, None, None, None, hint)
 
 
@@ -153,6 +157,25 @@ def _yue_allow_patterns() -> list[str]:
     ]
 
 
+def _incomplete_download_message(spec: ResourceSpec, dest: Path, hub_logs: list[str]) -> str:
+    if not dest.is_dir():
+        missing = "destination directory is missing"
+    elif not (dest / "config.json").is_file():
+        missing = "config.json is missing"
+    elif spec.kind in {"yue2", "vae", "mert"}:
+        missing = "model.safetensors is missing"
+    else:
+        missing = "weight files are missing"
+    message = f"Download of {spec.repo_id} did not produce a usable snapshot: {missing}."
+    remote = next((item for item in hub_logs if "cannot be accessed" in item), None)
+    if remote:
+        message += (
+            f" {remote} The leftover local folder is incomplete; Hugging Face returned it "
+            "instead of failing on the network error."
+        )
+    return message
+
+
 def download(spec: ResourceSpec, dest: Path, *, on_progress=None) -> Path:
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -170,12 +193,23 @@ def download(spec: ResourceSpec, dest: Path, *, on_progress=None) -> Path:
     previous = hf_tqdm_mod.tqdm
     if tqdm_class is not None:
         hf_tqdm_mod.tqdm = tqdm_class
+    hub_logs: list[str] = []
+
+    class _HubLog(logging.Handler):
+        def emit(self, record):
+            hub_logs.append(record.getMessage())
+
+    hub_logger = logging.getLogger("huggingface_hub")
+    hub_handler = _HubLog()
+    hub_handler.setLevel(logging.WARNING)
+    hub_logger.addHandler(hub_handler)
     try:
         snapshot_download(**kwargs)
     finally:
         hf_tqdm_mod.tqdm = previous
+        hub_logger.removeHandler(hub_handler)
     if not _looks_complete(dest, spec.kind):
-        raise FileNotFoundError(f"Download of {spec.repo_id} did not produce a usable snapshot")
+        raise FileNotFoundError(_incomplete_download_message(spec, dest, hub_logs))
     return dest.resolve()
 
 
@@ -298,6 +332,7 @@ def environment_report(settings) -> dict:
         "yue_root": str(yue_root()),
         "models_dir": str(models_dir()),
         "hf_endpoint": os.environ.get("HF_ENDPOINT") or os.environ.get("HUGGINGFACE_HUB_ENDPOINT"),
+        "ffmpeg": shutil.which("ffmpeg"),
         "versions": versions,
         "settings": {
             "device": settings.device,

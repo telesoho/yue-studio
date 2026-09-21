@@ -51,11 +51,13 @@ uv run yue-studio
 
 `style` 写风格/编制/人声/语种/速度，`lyrics` 写段落标签和词。`cot=full` 先规划带和弦的曲谱，再合成；改过的 ABC 会作为新输入，不会改写原来的 `plan.json`。
 
+「历史」页扫描 `outputs/`：可播放已合成的 `audio.flac`、查看规划曲谱，把一条记录载入到生成页，或确认后删除对应本地目录。
+
 ## 翻唱
 
 上传音频或直接提供 ABC。默认去掉和弦符号并以 `cot=melody` 生成；勾选「保留原和弦」则用 `cot=full`。
 
-从音频转谱时，工作室会自动下载 SheetSage2（若尚未就绪），并创建独立的 Python 3.11 虚拟环境安装其依赖（与 YuE2 不能共用一套包）。也可在「模型与资源」页预先下载；下载 SheetSage2 后同样会自动配置该环境。可选：`$env:YUE_STUDIO_SHEETSAGE_PYTHON` 指向已有解释器。转谱需要本机 FFmpeg。
+翻唱从音频转谱时，工作室会自动下载 SheetSage2 和它的父编码器 MERT-v2-FullSong（若尚未就绪），并创建独立的 Python 3.11 虚拟环境安装其依赖（与 YuE2 不能共用一套包）。也可在「模型与资源」页预先下载；下载 SheetSage2 后同样会自动配置该环境。可选：`$env:YUE_STUDIO_SHEETSAGE_PYTHON` 指向已有解释器。转谱需要本机 FFmpeg。
 
 ## 测试
 

@@ -297,22 +297,15 @@ class StudioRunner:
             if on_status:
                 on_status("卸载 YuE2 以便转谱占用 GPU…")
             self.unload()
-            statuses = {item.spec.name: item for item in scan_catalog()}
-            sheetsage = statuses.get("SheetSage2")
-            if sheetsage is None or not sheetsage.present:
-                if on_status:
-                    on_status("正在下载 SheetSage2…")
-                download_by_name("SheetSage2", dest_root=models_dir())
-                statuses = {item.spec.name: item for item in scan_catalog()}
-                sheetsage = statuses.get("SheetSage2")
-            if sheetsage is None or not sheetsage.present or sheetsage.path is None:
-                raise FileNotFoundError("SheetSage2 下载后仍不可用")
-            model = sheetsage.path
+            sheetsage = _ensure_resource("SheetSage2", on_status=on_status)
+            mert = _ensure_resource("MERT-v2-FullSong", on_status=on_status)
             directory = new_job_dir(outputs_dir(), "transcribe", identifier)
             device = "cpu" if self._pipeline_kwargs.get("device") == "cpu" else "cuda"
             dtype = "bf16" if device == "cuda" else "fp32"
-            score = run_transcribe(Path(audio), directory, task=task, model=model,
-                                   device=device, dtype=dtype, on_status=on_status)
+            score = run_transcribe(
+                Path(audio), directory, task=task, model=sheetsage.path,
+                base_model=mert.path, device=device, dtype=dtype, on_status=on_status,
+            )
             abc = score.read_text(encoding="utf-8")
             warnings_path = directory / "transcription_manifest.json"
             warnings = []
@@ -326,6 +319,20 @@ class StudioRunner:
                 "warnings": warnings,
                 "score": str(score),
             }
+
+
+def _ensure_resource(name: str, *, on_status=None):
+    statuses = {item.spec.name: item for item in scan_catalog()}
+    item = statuses.get(name)
+    if item is None or not item.present:
+        if on_status:
+            on_status(f"正在下载 {name}…")
+        download_by_name(name, dest_root=models_dir())
+        statuses = {item.spec.name: item for item in scan_catalog()}
+        item = statuses.get(name)
+    if item is None or not item.present or item.path is None:
+        raise FileNotFoundError(f"{name} 下载后仍不可用")
+    return item
 
 
 def _request_kwargs(request: dict) -> dict:

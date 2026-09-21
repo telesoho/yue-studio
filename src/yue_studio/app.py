@@ -25,6 +25,13 @@ from .invoke import (
     format_invocation,
     status_line,
 )
+from .history import (
+    TABLE_HEADERS as HISTORY_HEADERS,
+    delete_entry,
+    history_table,
+    load_entry,
+)
+from .history import TABLE_HEADERS, delete_entry, history_table, load_entry
 from .jobs import song_id
 from .models import (
     CATALOG_HEADERS,
@@ -98,6 +105,7 @@ def _env_text() -> str:
         "",
         "依赖: " + ", ".join(f"{k}={v}" for k, v in report["versions"].items()),
         f"SheetSage2 解释器: {python or '未配置（翻唱转谱时自动安装）'}",
+        f"FFmpeg: {report.get('ffmpeg') or '未找到（翻唱转谱需要，请安装并加入 PATH）'}",
         "",
         LICENSE_NOTE,
     ]
@@ -201,40 +209,59 @@ def download_resource(name):
         raise gr.Error("请选择要下载的资源")
 
     updates: queue.Queue = queue.Queue()
-    rows = _catalog_rows()
-    env = _env_text()
+    log = InvocationLog(f"=== 下载 ===\n{name}")
     cuda = get_runner().display_settings.device != "cpu"
 
     def on_progress(n, total, desc):
         updates.put(("p", n, total, desc))
 
+    def on_line(line, live=False):
+        updates.put(("line", line, live, None))
+
     def worker():
         try:
-            path = download_by_name(name, dest_root=models_dir(), on_progress=on_progress)
-            if name == "SheetSage2":
-                ensure_sheetsage_env(
-                    model_dir=path,
-                    cuda=cuda,
-                    on_status=lambda message: updates.put(("msg", message, None, None)),
-                )
+            with capture_stderr(on_line):
+                path = download_by_name(name, dest_root=models_dir(), on_progress=on_progress)
+                if name == "SheetSage2":
+                    ensure_sheetsage_env(
+                        model_dir=path,
+                        cuda=cuda,
+                        on_status=lambda message: updates.put(("msg", message, None, None)),
+                    )
             updates.put(("ok", path, None, None))
         except Exception as exc:
             updates.put(("err", f"{type(exc).__name__}: {exc}", None, None))
 
     threading.Thread(target=worker, daemon=True).start()
-    yield rows, env, f"开始下载 {name}"
+    log.add(f"开始下载 {name}")
+    progress_html = _progress_markup(f"开始下载 {name}", state="running")
+    yield gr.skip(), gr.skip(), progress_html, log.text()
     while True:
-        kind, payload, total, desc = updates.get()
+        kind, payload, extra, desc = updates.get()
         if kind == "p":
-            yield rows, env, _download_log_line(name, payload, total, desc)
+            progress_html = _progress_markup(
+                (desc or "").strip() or f"下载 {name}",
+                payload, extra, state="running", unit="bytes",
+            )
+            log.add(_download_log_line(name, payload, extra, desc), live=True)
+            yield gr.skip(), gr.skip(), progress_html, log.text()
+        elif kind == "line":
+            log.add(payload, live=bool(extra))
+            yield gr.skip(), gr.skip(), progress_html, log.text()
         elif kind == "msg":
-            yield rows, env, payload
+            log.add(payload)
+            progress_html = _progress_markup(payload, state="running")
+            yield gr.skip(), gr.skip(), progress_html, log.text()
         elif kind == "ok":
-            rows, env = _catalog_rows(), _env_text()
-            yield rows, env, f"已下载到 {payload}"
+            log.add(f"已下载到 {payload}")
+            progress_html = _progress_markup("完成", 1, 1, state="done")
+            yield _catalog_rows(), _env_text(), progress_html, log.text()
             return
         else:
-            raise gr.Error(payload)
+            log.add(payload)
+            progress_html = _progress_markup(payload, state="failed")
+            yield gr.skip(), gr.skip(), progress_html, log.text()
+            return
 
 
 def _download_log_line(name, n, total, desc) -> str:
@@ -244,11 +271,11 @@ def _download_log_line(name, n, total, desc) -> str:
             body = f"{_format_size(int(n))} / {_format_size(int(total))}"
         else:
             body = f"{int(n)} / {int(total)}"
-        return f"{label}\n{body}  ({100.0 * n / total:.1f}%)"
-    return f"{label}\n{_format_size(int(n)) if n >= 1024 else int(n)}"
+        return f"{label}  {body}  ({100.0 * n / total:.1f}%)"
+    return f"{label}  {_format_size(int(n)) if n >= 1024 else int(n)}"
 
 
-def _progress_markup(message="", completed=None, total=None, *, state="idle") -> str:
+def _progress_markup(message="", completed=None, total=None, *, state="idle", unit=None) -> str:
     label = html.escape(str(message)) if message else "等待任务"
     bar_class = "job-progress-bar"
     width = "0%"
@@ -264,7 +291,11 @@ def _progress_markup(message="", completed=None, total=None, *, state="idle") ->
         cls = "job-progress done" if state == "done" else "job-progress"
         pct = min(100.0, max(0.0, 100.0 * float(completed) / float(total)))
         width = f"{pct:.1f}%"
-        label = f"{label} {int(completed)}/{int(total)} — {pct:.1f}%"
+        if unit == "bytes":
+            counts = f"{_format_size(int(completed))} / {_format_size(int(total))} — {pct:.1f}%"
+        else:
+            counts = f"{int(completed)}/{int(total)} — {pct:.1f}%"
+        label = f"{label} {counts}"
     return (
         f'<div class="{cls}">'
         f'<div class="job-progress-label">{label}</div>'
@@ -370,7 +401,7 @@ def plan_song(style, lyrics, cot, seed, identifier, extra_abc,
             continue
         if phase == "failed":
             yield gr.skip(), request, gr.skip(), gr.skip(), gr.skip(), progress_html, log_text, gr.skip()
-            raise gr.Error(payload)
+            return
         result = payload
         score_html, abc, chords, score_status = _score_outputs(result["abc"])
         note = score_status
@@ -404,7 +435,7 @@ def render_song(style, lyrics, cot, seed, identifier, abc_text, plan_dir, reques
             continue
         if phase == "failed":
             yield gr.skip(), gr.skip(), gr.skip(), gr.skip(), progress_html, log_text
-            raise gr.Error(payload)
+            return
         result = payload
         score_html, abc, chords, score_status = _score_outputs(result["abc"] or abc_text or "")
         info = (
@@ -444,7 +475,7 @@ def transcribe_cover(audio, abc_file, abc_text, task_label,
             continue
         if phase == "failed":
             yield gr.skip(), gr.skip(), gr.skip(), gr.skip(), progress_html, log_text
-            raise gr.Error(payload)
+            return
         result = payload
         score_html, abc, chords, score_status = _score_outputs(result["abc"])
         warnings = result.get("warnings") or []
@@ -485,7 +516,7 @@ def render_cover(style, lyrics, seed, identifier, abc_text, keep_chords, _transc
             continue
         if phase == "failed":
             yield gr.skip(), gr.skip(), gr.skip(), gr.skip(), progress_html, log_text
-            raise gr.Error(payload)
+            return
         result = payload
         score_html, shown, chords, score_status = _score_outputs(result["abc"] or abc)
         info = (
@@ -499,6 +530,104 @@ def render_cover(style, lyrics, seed, identifier, abc_text, keep_chords, _transc
 def on_abc_edit(abc):
     html, _text, chords, _status = _score_outputs(abc or "")
     return html, chords
+
+
+def refresh_history():
+    return history_table()
+
+
+def on_history_tab(evt: gr.SelectData):
+    if evt.value not in {"history", "历史"}:
+        return gr.skip(), gr.skip(), gr.skip()
+    return refresh_history()
+
+
+def select_history(evt: gr.SelectData, paths):
+    paths = list(paths or [])
+    index = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+    if index is None or not paths or index < 0 or index >= len(paths):
+        raise gr.Error("请选择一条记录")
+    try:
+        entry = load_entry(paths[index])
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+    score_html, _abc, chords, status = _score_outputs(entry.abc)
+    audio = str(entry.audio) if entry.audio else None
+    info = f"{entry.directory}\n{status}"
+    return (
+        str(entry.directory),
+        audio,
+        score_html,
+        chords,
+        entry.request.get("style") or "",
+        entry.request.get("lyrics") or "",
+        info,
+    )
+
+
+def load_history_to_generate(selected, style, lyrics, cot, seed, identifier):
+    if not selected:
+        raise gr.Error("请先选择一条记录")
+    try:
+        entry = load_entry(selected)
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+    request = dict(entry.request)
+    abc = entry.abc or ""
+    score_html, _abc, chords, _status = _score_outputs(abc)
+    plan_dir = str(entry.directory) if entry.has_plan else None
+    if request:
+        style = request.get("style") or style
+        lyrics = request.get("lyrics") or lyrics
+        cot = request.get("cot") or cot
+        if request.get("seed") is not None:
+            seed = int(request["seed"])
+        identifier = request.get("id") or entry.identifier or identifier
+        request_state = request
+    else:
+        style = gr.skip()
+        lyrics = gr.skip()
+        cot = gr.skip()
+        seed = gr.skip()
+        identifier = gr.skip()
+        request_state = gr.skip()
+    return (
+        gr.update(selected="generate"),
+        style, lyrics, cot, seed, identifier,
+        abc, plan_dir, request_state, score_html, chords,
+    )
+
+
+def delete_history(selected, confirm):
+    if not selected:
+        raise gr.Error("请先选择一条记录")
+    if not confirm:
+        raise gr.Error("请勾选「确认删除本地目录」")
+    score_html, _abc, chords, _status = _score_outputs("")
+    yield (
+        gr.skip(), gr.skip(), gr.skip(), selected, None,
+        gr.skip(), gr.skip(), gr.skip(), gr.skip(), "正在删除…", False,
+    )
+    try:
+        delete_entry(selected)
+    except OSError as exc:
+        yield (
+            gr.skip(), gr.skip(), gr.skip(), selected, gr.skip(),
+            gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+            f"无法删除（文件可能正在播放）: {exc}", False,
+        )
+        return
+    except ValueError as exc:
+        yield (
+            gr.skip(), gr.skip(), gr.skip(), selected, gr.skip(),
+            gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+            str(exc), False,
+        )
+        return
+    rows, paths, note = history_table()
+    yield (
+        rows, paths, note, None, None, score_html, chords, "", "", "已删除。", False,
+    )
 
 
 def build_app():
@@ -515,7 +644,7 @@ def build_app():
         gr.HTML(
             '<div class="studio-head">'
             "<h1>Yue Studio</h1>"
-            "<p>曲谱 · 和弦 · 翻唱 · YuE2 模型与资源</p>"
+            "<p>曲谱 · 和弦 · 翻唱 · 历史 · YuE2 模型与资源</p>"
             "</div>"
         )
         hw_html = gr.HTML(value=hardware_html(snapshot, initial), elem_classes=["hw-bar-wrap"])
@@ -549,8 +678,9 @@ def build_app():
                 value="\n".join(initial.notes), label="说明", lines=2, interactive=False,
             )
         hw_inputs = [profile, gpu_device, budget, quantization, offload_ar, vae_core_frames]
-        with gr.Tabs():
-            with gr.Tab("模型与资源"):
+        init_hist_rows, init_hist_paths, init_hist_note = history_table()
+        with gr.Tabs() as studio_tabs:
+            with gr.Tab("模型与资源", id="models"):
                 env_box = gr.Textbox(label="环境", value=_env_text(), lines=14, elem_id="env-box")
                 catalog = gr.Dataframe(headers=CATALOG_HEADERS, value=_catalog_rows(),
                                        wrap=True, interactive=False, label="官方模型与资源")
@@ -559,10 +689,13 @@ def build_app():
                                            value="YuE2-3B", label="下载")
                     download_btn = gr.Button("下载到 models/", variant="primary")
                     refresh_btn = gr.Button("刷新")
-                download_log = gr.Textbox(label="下载记录", lines=6)
+                download_progress = gr.HTML(value=_progress_markup(), label="进度",
+                                           elem_classes=["job-progress-wrap"])
+                download_log = gr.Textbox(label="下载记录", lines=8, elem_classes=["invoke-log"])
                 download_btn.click(
-                    download_resource, [resource], [catalog, env_box, download_log],
-                    show_progress="minimal",
+                    download_resource, [resource],
+                    [catalog, env_box, download_progress, download_log],
+                    show_progress="hidden",
                 )
                 refresh_btn.click(
                     refresh_models, [profile, gpu_device],
@@ -573,7 +706,7 @@ def build_app():
                     [hw_html, budget, quantization, offload_ar, vae_core_frames, hw_notes, env_box]
                 )
 
-            with gr.Tab("生成"):
+            with gr.Tab("生成", id="generate"):
                 plan_dir = gr.State(None)
                 request_state = gr.State({})
                 with gr.Row():
@@ -616,7 +749,7 @@ def build_app():
                 )
                 abc_editor.blur(on_abc_edit, [abc_editor], [score_html, chords])
 
-            with gr.Tab("翻唱"):
+            with gr.Tab("翻唱", id="cover"):
                 transcribe_dir = gr.State(None)
                 audio_in = gr.Audio(label="源音频", type="filepath", sources=["upload"])
                 with gr.Row():
@@ -659,6 +792,56 @@ def build_app():
                 )
                 cover_abc.blur(on_abc_edit, [cover_abc], [cover_score, cover_chords])
 
+            with gr.Tab("历史", id="history"):
+                hist_paths = gr.State(init_hist_paths)
+                hist_selected = gr.State(None)
+                hist_table = gr.Dataframe(
+                    headers=TABLE_HEADERS, value=init_hist_rows, wrap=True,
+                    interactive=False, label="点选一行查看并播放",
+                )
+                hist_note = gr.Textbox(
+                    value=init_hist_note, label="状态", lines=2, interactive=False,
+                )
+                with gr.Row():
+                    hist_refresh = gr.Button("刷新")
+                    hist_load = gr.Button("载入到生成页", variant="primary")
+                    hist_delete = gr.Button("删除")
+                    hist_confirm = gr.Checkbox(False, label="确认删除本地目录")
+                hist_audio = gr.Audio(label="音频", type="filepath", interactive=False)
+                hist_score = gr.HTML(value=_score_outputs("")[0], elem_classes=["staff-panel"])
+                hist_chords = gr.Dataframe(
+                    headers=CHORD_HEADERS, value=empty_chords,
+                    label="和弦", wrap=True, interactive=False,
+                )
+                with gr.Row():
+                    hist_style = gr.Textbox(label="style", lines=3, interactive=False)
+                    hist_lyrics = gr.Textbox(label="lyrics", lines=8, interactive=False)
+                hist_info = gr.Textbox(label="路径", lines=3, interactive=False)
+                hist_refresh.click(
+                    refresh_history, None, [hist_table, hist_paths, hist_note],
+                )
+                hist_table.select(
+                    select_history, [hist_paths],
+                    [hist_selected, hist_audio, hist_score, hist_chords,
+                     hist_style, hist_lyrics, hist_info],
+                )
+                hist_load.click(
+                    load_history_to_generate,
+                    [hist_selected, style, lyrics, cot, seed, identifier],
+                    [studio_tabs, style, lyrics, cot, seed, identifier,
+                     abc_editor, plan_dir, request_state, score_html, chords],
+                )
+                hist_delete.click(
+                    delete_history, [hist_selected, hist_confirm],
+                    [hist_table, hist_paths, hist_note, hist_selected, hist_audio,
+                     hist_score, hist_chords, hist_style, hist_lyrics, hist_info,
+                     hist_confirm],
+                    show_progress="minimal",
+                )
+
+        studio_tabs.select(
+            on_history_tab, None, [hist_table, hist_paths, hist_note],
+        )
         profile.change(on_profile, [profile, gpu_device], hw_event_out)
         gpu_device.change(on_profile, [profile, gpu_device], hw_event_out)
         for control in (budget, quantization, offload_ar, vae_core_frames):

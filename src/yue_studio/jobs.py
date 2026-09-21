@@ -23,5 +23,5 @@ def new_job_dir(root: Path, kind: str, identifier: str) -> Path:
     directory = Path(root) / f"{kind}-{stamp}-{song_id(identifier)}"
     if directory.exists() and any(directory.iterdir()):
         raise FileExistsError(f"Nonempty output {directory}")
-    directory.mkdir(parents=True, exist_ok=False)
+    directory.mkdir(parents=True, exist_ok=True)
     return directory

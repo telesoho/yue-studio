@@ -124,20 +124,61 @@ def test_transcribe_uses_runner_device(tmp_path, monkeypatch):
         score.write_text("X:1\nK:C\nC", encoding="utf-8")
         return score
 
+    mert = tmp_path / "MERT-v2-FullSong"
+    mert.mkdir()
     monkeypatch.setattr("yue_studio.runner.run_transcribe", fake_run_transcribe)
     monkeypatch.setattr(
         "yue_studio.runner.scan_catalog",
-        lambda: [SimpleNamespace(
-            spec=SimpleNamespace(name="SheetSage2"),
-            present=True, path=model,
-        )],
+        lambda: [
+            SimpleNamespace(spec=SimpleNamespace(name="SheetSage2"), present=True, path=model),
+            SimpleNamespace(spec=SimpleNamespace(name="MERT-v2-FullSong"), present=True, path=mert),
+        ],
     )
     runner = StudioRunner()
     runner.set_use_gpu(False)
     result = runner.transcribe(audio)
     assert captured["device"] == "cpu"
     assert captured["dtype"] == "fp32"
+    assert captured["base_model"] == mert
     assert "score.abc" in result["score"]
+
+
+def test_transcribe_downloads_missing_mert(tmp_path, monkeypatch):
+    monkeypatch.setattr("yue_studio.runner.outputs_dir", lambda: tmp_path)
+    monkeypatch.setattr("yue_studio.runner.models_dir", lambda: tmp_path)
+    audio = tmp_path / "song.wav"
+    audio.write_bytes(b"RIFF")
+    model = tmp_path / "SheetSage2"
+    model.mkdir()
+    mert = tmp_path / "MERT-v2-FullSong"
+    catalog = [
+        SimpleNamespace(spec=SimpleNamespace(name="SheetSage2"), present=True, path=model),
+        SimpleNamespace(spec=SimpleNamespace(name="MERT-v2-FullSong"), present=False, path=None),
+    ]
+    downloaded = []
+
+    def fake_download(name, dest_root=None, on_progress=None):
+        downloaded.append(name)
+        mert.mkdir()
+        catalog[1] = SimpleNamespace(
+            spec=SimpleNamespace(name="MERT-v2-FullSong"), present=True, path=mert,
+        )
+        return mert
+
+    captured = {}
+
+    def fake_run_transcribe(path, directory, **kwargs):
+        captured.update(kwargs)
+        score = directory / "score.abc"
+        score.write_text("X:1\nK:C\nC", encoding="utf-8")
+        return score
+
+    monkeypatch.setattr("yue_studio.runner.download_by_name", fake_download)
+    monkeypatch.setattr("yue_studio.runner.scan_catalog", lambda: list(catalog))
+    monkeypatch.setattr("yue_studio.runner.run_transcribe", fake_run_transcribe)
+    StudioRunner().transcribe(audio)
+    assert downloaded == ["MERT-v2-FullSong"]
+    assert captured["base_model"] == mert
 
 
 def test_plan_reports_token_counts(tmp_path, monkeypatch):

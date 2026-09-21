@@ -1,7 +1,16 @@
 import io
 import sys
 
-from yue_studio.app import _logged_work, _progress_markup
+from pathlib import Path
+from types import SimpleNamespace
+
+from yue_studio.app import (
+    _download_log_line,
+    _logged_work,
+    _progress_markup,
+    download_resource,
+    transcribe_cover,
+)
 from yue_studio.runner import PipelineSettings
 from yue_studio.invoke import (
     InvocationLog,
@@ -105,6 +114,109 @@ def test_progress_markup_is_separate_from_log():
     assert "306/4896" in running
     assert "job-progress-bar" in running
     assert "&lt;" in _progress_markup("<script>", state="running")
+
+
+def test_progress_markup_formats_byte_counts():
+    markup = _progress_markup("model.safetensors", 40 * 1024, 100 * 1024, state="running", unit="bytes")
+    assert "model.safetensors" in markup
+    assert "40.0 KiB / 100.0 KiB" in markup
+    assert "40.0%" in markup
+    assert "40960/102400" not in markup
+
+
+def test_download_log_line_keeps_size_on_one_line():
+    line = _download_log_line("YuE2-3B", 40 * 1024, 100 * 1024, "model.safetensors")
+    assert "model.safetensors" in line
+    assert "40.0 KiB / 100.0 KiB" in line
+    assert "40.0%" in line
+    assert "\n" not in line
+
+
+def test_download_resource_streams_only_download_panel(monkeypatch):
+    import gradio as gr
+
+    def fake_download(name, dest_root=None, on_progress=None):
+        print("hub-fetch", file=sys.stderr)
+        on_progress(32, 80, "model.safetensors")
+        on_progress(80, 80, "model.safetensors")
+        return Path("/tmp/YuE2-3B")
+
+    monkeypatch.setattr("yue_studio.app.download_by_name", fake_download)
+    monkeypatch.setattr("yue_studio.app._catalog_rows", lambda: [["YuE2-3B", "已就绪"]])
+    monkeypatch.setattr("yue_studio.app._env_text", lambda: "env-ready")
+    monkeypatch.setattr(
+        "yue_studio.app.get_runner",
+        lambda: SimpleNamespace(display_settings=SimpleNamespace(device="cpu")),
+    )
+
+    events = list(download_resource("YuE2-3B"))
+    assert events[0][:2] == (gr.skip(), gr.skip())
+    assert "开始下载 YuE2-3B" in events[0][3]
+    assert "job-progress" in events[0][2]
+    progress_logs = [event[3] for event in events]
+    assert any("model.safetensors" in text for text in progress_logs)
+    assert any("hub-fetch" in text for text in progress_logs)
+    assert events[-1][0] == [["YuE2-3B", "已就绪"]]
+    assert events[-1][1] == "env-ready"
+    assert "完成" in events[-1][2]
+    assert "已下载到" in events[-1][3]
+    for catalog, env, *_ in events[:-1]:
+        assert catalog == gr.skip()
+        assert env == gr.skip()
+
+
+def test_logged_work_records_failure_without_raising():
+    def work(on_status):
+        on_status("SheetSage2 转谱中…")
+        raise RuntimeError("ffmpeg is required to read audio files")
+
+    events = list(_logged_work("HEADER", work))
+    assert events[-1][0] == "failed"
+    assert "ffmpeg is required" in events[-1][1]
+    assert "ffmpeg is required" in events[-1][2]
+    assert "failed" in events[-1][3]
+
+
+def test_transcribe_cover_failure_keeps_score_panels(monkeypatch):
+    import gradio as gr
+
+    class Boom:
+        def transcribe(self, *args, **kwargs):
+            raise RuntimeError("ffmpeg is required to read audio files")
+
+    monkeypatch.setattr("yue_studio.app.sync_hardware", lambda *args, **kwargs: None)
+    monkeypatch.setattr("yue_studio.app.get_runner", lambda *args, **kwargs: Boom())
+
+    events = []
+    for event in transcribe_cover(
+        "song.wav", None, "", "旋律（推荐翻唱）",
+        "auto", "cuda", 8, "fp8", True, 512,
+    ):
+        events.append(event)
+
+    last = events[-1]
+    assert last[:4] == (gr.skip(), gr.skip(), gr.skip(), gr.skip())
+    assert "failed" in last[4]
+    assert "ffmpeg is required" in last[5]
+
+
+def test_download_resource_failure_keeps_catalog(monkeypatch):
+    import gradio as gr
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("yue_studio.app.download_by_name", boom)
+    monkeypatch.setattr(
+        "yue_studio.app.get_runner",
+        lambda: SimpleNamespace(display_settings=SimpleNamespace(device="cpu")),
+    )
+
+    events = list(download_resource("YuE2-3B"))
+    assert events[-1][0] == gr.skip()
+    assert events[-1][1] == gr.skip()
+    assert "failed" in events[-1][2]
+    assert "disk full" in events[-1][3]
 
 
 def test_logged_work_streams_status_and_stderr():
