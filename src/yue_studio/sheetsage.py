@@ -212,7 +212,7 @@ def _clear_empty_output(output: Path) -> Path:
     if not output.exists():
         return output
     if not output.is_dir() or any(output.iterdir()):
-        raise FileExistsError(f"Nonempty output {output}")
+        raise FileExistsError(f"输出目录非空：{output}")
     output.rmdir()
     return output
 

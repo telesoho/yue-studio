@@ -26,5 +26,5 @@ def test_new_job_dir_reuses_empty_leftover(tmp_path: Path, monkeypatch):
     assert reused == leftover
     assert leftover.is_dir()
     (leftover / "score.abc").write_text("X:1\n", encoding="utf-8")
-    with pytest.raises(FileExistsError, match="Nonempty output"):
+    with pytest.raises(FileExistsError, match="输出目录非空"):
         new_job_dir(tmp_path, "transcribe", "cover")

@@ -224,7 +224,7 @@ def test_logged_work_streams_status_and_stderr():
         print("native-log", file=sys.stderr)
         on_status("正在规划曲谱…", 3, 10)
         on_status("正在规划曲谱…", 4, 10)
-        on_status("正在生成语义 token…", 1, 8)
+        on_status("正在生成语义标记…", 1, 8)
         return {"ok": True}
 
     events = list(_logged_work("HEADER", work))
@@ -237,7 +237,7 @@ def test_logged_work_streams_status_and_stderr():
     assert "native-log" in text
     assert "正在规划曲谱… 4/10" in text
     assert "正在规划曲谱… 3/10" not in text
-    assert "正在生成语义 token… 1/8" in text
+    assert "正在生成语义标记… 1/8" in text
     assert "完成" in text
     progress_updates = [event[3] for event in events]
     assert any("3/10" in markup for markup in progress_updates)

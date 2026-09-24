@@ -30,12 +30,14 @@ class PipelineSettings:
         }
 
     def summary(self) -> str:
+        quant = "fp8" if self.quantization == "fp8" else "全精度"
+        offload = "是" if self.offload_ar else "否"
         return "\n".join((
-            f"device={self.device}",
-            f"memory_budget_gib={self.memory_budget_gib:g}",
-            f"quantization={self.quantization}",
-            f"offload_ar={self.offload_ar}",
-            f"vae_core_frames={self.vae_core_frames}",
+            f"设备: {self.device}",
+            f"显存预算: {self.memory_budget_gib:g} GiB",
+            f"量化: {quant}",
+            f"卸载 AR: {offload}",
+            f"VAE 分块帧数: {self.vae_core_frames}",
         ))
 
 
@@ -228,7 +230,7 @@ class StudioRunner:
             start = time.perf_counter()
             if reuse_plan:
                 if plan is None:
-                    raise RuntimeError("Saved plan was not loaded")
+                    raise RuntimeError("未能载入已保存的曲谱规划")
                 if on_status:
                     on_status("沿用已保存的曲谱规划…")
             else:
@@ -244,12 +246,12 @@ class StudioRunner:
                 finally:
                     done()
             on_token, done = _token_callbacks(
-                on_status, "正在生成语义 token…", pipe.generation_config.semantic.max_tokens)
+                on_status, "正在生成语义标记…", pipe.generation_config.semantic.max_tokens)
             try:
                 semantic = pipe.generate_semantic(plan, on_token=on_token)
             finally:
                 done()
-            on_progress, done = _step_callbacks(on_status, "正在合成声学 latent…")
+            on_progress, done = _step_callbacks(on_status, "正在合成声学潜变量…")
             try:
                 nar_start = time.perf_counter()
                 latents = pipe.synthesize(semantic, on_progress=on_progress)

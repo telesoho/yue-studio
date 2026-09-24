@@ -268,10 +268,10 @@ def test_render_reports_semantic_nar_and_vae(tmp_path, monkeypatch):
     )
     labels = [item[0] for item in events]
     assert "正在规划曲谱…" in labels
-    assert "正在生成语义 token…" in labels
-    assert "正在合成声学 latent…" in labels
+    assert "正在生成语义标记…" in labels
+    assert "正在合成声学潜变量…" in labels
     assert "正在解码音频…" in labels
-    assert any(item == ("正在合成声学 latent…", 8, 8) for item in events)
-    assert any(item[0] == "正在生成语义 token…" and item[1] >= 1 for item in events)
+    assert any(item == ("正在合成声学潜变量…", 8, 8) for item in events)
+    assert any(item[0] == "正在生成语义标记…" and item[1] >= 1 for item in events)
     assert result["audio_seconds"] == 1.5
     assert result["audio"] is not None

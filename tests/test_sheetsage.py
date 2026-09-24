@@ -204,6 +204,6 @@ def test_run_transcribe_rejects_nonempty_output(tmp_path: Path, monkeypatch):
         raise AssertionError("should not invoke SheetSage2")
 
     monkeypatch.setattr("subprocess.run", fail_run)
-    with pytest.raises(FileExistsError, match="Nonempty output"):
+    with pytest.raises(FileExistsError, match="输出目录非空"):
         run_transcribe(audio, output, python=python, script=script, model=tmp_path / "SheetSage2")
     assert (output / "keep.txt").is_file()

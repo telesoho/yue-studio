@@ -22,6 +22,6 @@ def new_job_dir(root: Path, kind: str, identifier: str) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     directory = Path(root) / f"{kind}-{stamp}-{song_id(identifier)}"
     if directory.exists() and any(directory.iterdir()):
-        raise FileExistsError(f"Nonempty output {directory}")
+        raise FileExistsError(f"输出目录非空：{directory}")
     directory.mkdir(parents=True, exist_ok=True)
     return directory

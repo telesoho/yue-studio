@@ -68,7 +68,7 @@ def test_force_24gb_on_8gb_card_warns():
     assert preset.memory_budget_gib == 24
     assert preset.quantization == "none"
     assert preset.offload_ar is False
-    assert any("OOM" in note for note in preset.notes)
+    assert any("显存不足" in note for note in preset.notes)
 
 
 def test_8gb_without_fp8():
@@ -107,7 +107,7 @@ def test_custom_params_warn_when_budget_exceeds_vram():
         offload_ar=False, vae_core_frames=1024, snapshot=snapshot,
     )
     assert any("大于本机显存" in note for note in preset.notes)
-    assert any("offload_ar" in note for note in preset.notes)
+    assert any("卸载 AR" in note for note in preset.notes)
 
 
 def test_auto_rounds_uneven_vram_budget():
@@ -115,7 +115,7 @@ def test_auto_rounds_uneven_vram_budget():
     snapshot = _snapshot((gpu,))
     preset = resolve_profile(PROFILE_AUTO, snapshot)
     assert preset.memory_budget_gib == 8.0
-    assert "budget 8 GiB" in hardware_html(snapshot, preset)
+    assert "预算 8 GiB" in hardware_html(snapshot, preset)
 
 
 def test_hardware_html_shows_vram_and_params():
@@ -124,7 +124,7 @@ def test_hardware_html_shows_vram_and_params():
     markup = hardware_html(snapshot, preset)
     assert "8.0 GiB" in markup
     assert "RTX 4060" in markup
-    assert "budget 8 GiB" in markup
+    assert "预算 8 GiB" in markup
     assert "fp8" in markup
     assert "hw-leds" in markup
     assert markup.count('class="on"') == 2
@@ -150,7 +150,7 @@ def test_on_profile_applies_detected_vram(monkeypatch):
     html, budget, quant, offload, vae, notes, env = app.on_profile(PROFILE_24GB, "cuda")
     assert budget == 24
     assert quant == "none"
-    assert "OOM" in notes
+    assert "显存不足" in notes
     _, custom = app.sync_hardware(PROFILE_24GB, "cuda", 24, "none", False, 1024)
-    assert any("OOM" in note for note in custom.notes)
+    assert any("显存不足" in note for note in custom.notes)
     assert not any("自定义" in note for note in custom.notes)

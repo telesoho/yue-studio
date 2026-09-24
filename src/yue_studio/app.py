@@ -385,8 +385,8 @@ def plan_song(style, lyrics, cot, seed, identifier, extra_abc,
     score_html, _abc_show, chords, _score_status = _score_outputs(abc_in if cot != "off" else "")
     if cot == "off":
         log = InvocationLog(header)
-        log.add("cot=off 不生成曲谱，可直接合成音频。")
-        yield None, request, score_html, abc_in, chords, _progress_markup("cot=off", 1, 1, state="done"), log.text(), None
+        log.add("曲谱模式为关闭，不生成曲谱，可直接合成音频。")
+        yield None, request, score_html, abc_in, chords, _progress_markup("不规划曲谱", 1, 1, state="done"), log.text(), None
         return
     for phase, log_text, payload, progress_html in _logged_work(
             header, lambda on_status: get_runner().plan(request, on_status=on_status)):
@@ -515,7 +515,7 @@ def render_cover(style, lyrics, seed, identifier, abc_text, keep_chords, _transc
         score_html, shown, chords, score_status = _score_outputs(result["abc"] or abc)
         info = (
             f"{log_text}\n"
-            f"cot={cot}\n输出: {result['directory']}\n"
+            f"曲谱模式={'完整' if cot == 'full' else '仅旋律'}\n输出: {result['directory']}\n"
             f"{_truncated_text(result['truncated'])}\n{score_status}"
         )
         yield result["audio"], score_html, shown, chords, progress_html, info
@@ -663,7 +663,7 @@ def build_app():
                 choices=list(PROFILE_CHOICES),
                 value=PROFILE_AUTO,
                 label="调用预设",
-                info="按本机显存选择 YuE2 的 device / budget / quantization",
+                info="按本机显存选择设备、显存预算和量化",
             )
             gpu_device = gr.Dropdown(
                 choices=gpu_items,
@@ -678,11 +678,12 @@ def build_app():
                     minimum=1, step=0.5, precision=1,
                 )
                 quantization = gr.Radio(
-                    ["none", "fp8"], value=initial.quantization, label="quantization",
+                    [("无", "none"), ("FP8", "fp8")],
+                    value=initial.quantization, label="量化",
                 )
-                offload_ar = gr.Checkbox(value=initial.offload_ar, label="offload_ar")
+                offload_ar = gr.Checkbox(value=initial.offload_ar, label="卸载 AR")
                 vae_core_frames = gr.Radio(
-                    [512, 1024], value=initial.vae_core_frames, label="vae_core_frames",
+                    [512, 1024], value=initial.vae_core_frames, label="VAE 分块帧数",
                 )
             hw_notes = gr.Textbox(
                 value="\n".join(initial.notes), label="说明", lines=2, interactive=False,
@@ -697,7 +698,7 @@ def build_app():
                 with gr.Row():
                     resource = gr.Dropdown([item.name for item in RESOURCES],
                                            value="YuE2-3B", label="下载")
-                    download_btn = gr.Button("下载到 models/", variant="primary")
+                    download_btn = gr.Button("下载到本地", variant="primary")
                     refresh_btn = gr.Button("刷新")
                 download_progress = gr.HTML(value=_progress_markup(), label="进度",
                                            elem_classes=["job-progress-wrap"])
@@ -721,20 +722,21 @@ def build_app():
                 request_state = gr.State({})
                 with gr.Row(equal_height=False):
                     with gr.Column(scale=5, min_width=320):
-                        style = gr.Textbox(label="style（风格/编制/人声/语种/速度）",
+                        style = gr.Textbox(label="风格（编制、人声、语种、速度）",
                                            value=defaults["style"], lines=4)
-                        lyrics = gr.Textbox(label="lyrics（段落标签与歌词）",
+                        lyrics = gr.Textbox(label="歌词（段落标签与词）",
                                             value=defaults["lyrics"], lines=8)
                         with gr.Row():
                             cot = gr.Radio(
-                                ["full", "melody", "off"], value=defaults.get("cot", "full"),
-                                label="cot",
+                                [("完整", "full"), ("仅旋律", "melody"), ("关闭", "off")],
+                                value=defaults.get("cot", "full"),
+                                label="曲谱模式",
                             )
                             seed = gr.Number(
-                                value=defaults.get("seed", 831001), precision=0, label="seed",
+                                value=defaults.get("seed", 831001), precision=0, label="种子",
                             )
-                            identifier = gr.Textbox(value=defaults.get("id", "song"), label="id")
-                        extra_abc = gr.Textbox(label="可选外部 ABC（full / melody）", lines=4)
+                            identifier = gr.Textbox(value=defaults.get("id", "song"), label="标识")
+                        extra_abc = gr.Textbox(label="可选外部 ABC（完整 / 仅旋律）", lines=4)
                         with gr.Row():
                             plan_btn = gr.Button("规划曲谱", variant="primary")
                             render_btn = gr.Button("合成音频")
@@ -784,15 +786,15 @@ def build_app():
                                 value="旋律（推荐翻唱）",
                                 label="转谱任务",
                             )
-                        keep_chords = gr.Checkbox(False, label="保留原和弦（cot=full）")
+                        keep_chords = gr.Checkbox(False, label="保留原和弦（完整曲谱）")
                         transcribe_btn = gr.Button("转谱 / 载入 ABC", variant="primary")
-                        cover_style = gr.Textbox(label="目标 style", value=defaults["style"], lines=3)
-                        cover_lyrics = gr.Textbox(label="目标 lyrics", value=defaults["lyrics"], lines=6)
+                        cover_style = gr.Textbox(label="目标风格", value=defaults["style"], lines=3)
+                        cover_lyrics = gr.Textbox(label="目标歌词", value=defaults["lyrics"], lines=6)
                         with gr.Row():
                             cover_seed = gr.Number(
-                                value=defaults.get("seed", 831001), precision=0, label="seed",
+                                value=defaults.get("seed", 831001), precision=0, label="种子",
                             )
-                            cover_id = gr.Textbox(value="cover", label="id")
+                            cover_id = gr.Textbox(value="cover", label="标识")
                         cover_btn = gr.Button("生成翻唱")
                         cover_progress = gr.HTML(value=_progress_markup(), label="进度",
                                                  elem_classes=["job-progress-wrap"])
@@ -844,8 +846,8 @@ def build_app():
                 with gr.Row(equal_height=False):
                     with gr.Column(scale=5, min_width=320):
                         hist_audio = gr.Audio(label="音频", type="filepath", interactive=False)
-                        hist_style = gr.Textbox(label="style", lines=3, interactive=False)
-                        hist_lyrics = gr.Textbox(label="lyrics", lines=8, interactive=False)
+                        hist_style = gr.Textbox(label="风格", lines=3, interactive=False)
+                        hist_lyrics = gr.Textbox(label="歌词", lines=8, interactive=False)
                         hist_info = gr.Textbox(label="路径", lines=3, interactive=False)
                     with gr.Column(scale=6, min_width=360):
                         hist_score = gr.HTML(

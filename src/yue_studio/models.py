@@ -24,8 +24,8 @@ class ResourceSpec:
 
 
 RESOURCES = (
-    ResourceSpec("YuE2-3B", "m-a-p/YuE2-3B", "歌词+风格 → 曲谱规划 → 语义 token → 声学 latent", True, "yue2", "YuE2-3B"),
-    ResourceSpec("YuE2-Vae", "m-a-p/YuE2-Vae", "聆听解码：latent → 48 kHz 立体声", True, "vae", "YuE2-Vae"),
+    ResourceSpec("YuE2-3B", "m-a-p/YuE2-3B", "歌词+风格 → 曲谱规划 → 语义标记 → 声学潜变量", True, "yue2", "YuE2-3B"),
+    ResourceSpec("YuE2-Vae", "m-a-p/YuE2-Vae", "聆听解码：潜变量 → 48 kHz 立体声", True, "vae", "YuE2-Vae"),
     ResourceSpec("YuE2-Vae-legacy", "m-a-p/YuE2-Vae-legacy", "评测协议解码器，不要与聆听输出混放", False, "vae", "YuE2-Vae-legacy"),
     ResourceSpec("SheetSage2", "m-a-p/SheetSage2", "音频 → ABC 曲谱/和弦（翻唱转谱）", False, "sheetsage", "SheetSage2"),
     ResourceSpec("MERT-v2-FullSong", "m-a-p/MERT-v2-FullSong", "SheetSage2 自动加载的父编码器", False, "mert", "MERT-v2-FullSong"),
@@ -50,7 +50,10 @@ class ResourceStatus:
         loc = str(self.path) if self.path else "—"
         size = _format_size(self.size_bytes) if self.size_bytes else "—"
         rev = (self.revision or "—")[:12]
-        return [self.spec.name, need, state, self.spec.role, loc, size, rev, self.source or "—"]
+        origin = {"studio": "工作室", "yue": "YuE 仓库", "hf-cache": "HF 缓存"}.get(
+            self.source or "", self.source or "—",
+        )
+        return [self.spec.name, need, state, self.spec.role, loc, size, rev, origin]
 
 
 def _format_size(nbytes: int) -> str:
@@ -126,7 +129,7 @@ def locate(spec: ResourceSpec, *, studio: Path | None = None, yue: Path | None =
         if snap is not None and _looks_complete(snap, spec.kind):
             return ResourceStatus(spec, True, snap.resolve(), "hf-cache", _dir_size(snap),
                                   revision, "位于 Hugging Face 缓存")
-    hint = "可在本页下载到 studio/models/"
+    hint = "可在本页下载到工作室的 models/ 目录"
     if spec.kind == "sheetsage":
         hint += "。翻唱转谱时会自动配置独立 Python 3.11 环境。"
     elif spec.kind == "mert":
@@ -159,19 +162,19 @@ def _yue_allow_patterns() -> list[str]:
 
 def _incomplete_download_message(spec: ResourceSpec, dest: Path, hub_logs: list[str]) -> str:
     if not dest.is_dir():
-        missing = "destination directory is missing"
+        missing = "目标目录不存在"
     elif not (dest / "config.json").is_file():
-        missing = "config.json is missing"
+        missing = "缺少 config.json"
     elif spec.kind in {"yue2", "vae", "mert"}:
-        missing = "model.safetensors is missing"
+        missing = "缺少 model.safetensors"
     else:
-        missing = "weight files are missing"
-    message = f"Download of {spec.repo_id} did not produce a usable snapshot: {missing}."
+        missing = "缺少权重文件"
+    message = f"下载 {spec.repo_id} 没有得到可用快照：{missing}。"
     remote = next((item for item in hub_logs if "cannot be accessed" in item), None)
     if remote:
         message += (
-            f" {remote} The leftover local folder is incomplete; Hugging Face returned it "
-            "instead of failing on the network error."
+            f" {remote} 本地残留目录不完整；Hugging Face 在网络错误时返回了它，"
+            "而不是直接失败。"
         )
     return message
 
@@ -345,4 +348,4 @@ def environment_report(settings) -> dict:
     }
 
 
-CATALOG_HEADERS = ["名称", "级别", "状态", "用途", "路径", "体积", "revision", "来源"]
+CATALOG_HEADERS = ["名称", "级别", "状态", "用途", "路径", "体积", "修订", "来源"]

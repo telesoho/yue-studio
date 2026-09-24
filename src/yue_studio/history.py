@@ -11,7 +11,7 @@ from .paths import outputs_dir
 
 JOB_DIR = re.compile(r"^(song|plan|transcribe)-(\d{8}-\d{6})-(.+)$")
 KIND_LABELS = {"song": "生成", "plan": "规划", "transcribe": "转谱"}
-TABLE_HEADERS = ["时间", "类型", "id", "时长", "风格"]
+TABLE_HEADERS = ["时间", "类型", "标识", "时长", "风格"]
 EMPTY_NOTE = "还没有可播放或可查看的记录。在「生成」或「翻唱」页完成后会出现在这里。"
 STYLE_LIMIT = 40
 

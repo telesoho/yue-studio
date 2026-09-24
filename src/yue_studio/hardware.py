@@ -97,7 +97,7 @@ def resolve_profile(profile: str, snapshot: HardwareSnapshot, *,
         return _pretty_preset(_eight_gb_preset(base, gpu))
     if name == PROFILE_24GB:
         return _pretty_preset(_twenty_four_gb_preset(base, gpu))
-    raise ValueError(f"Unknown hardware profile {profile!r}")
+    raise ValueError(f"未知的硬件预设 {profile!r}")
 
 
 def preset_from_controls(*, device: str, memory_budget_gib: float, quantization: str,
@@ -110,7 +110,7 @@ def preset_from_controls(*, device: str, memory_budget_gib: float, quantization:
     if device == "cpu":
         notes = list(_cpu_notes(snapshot))
         if quantization == "fp8":
-            notes.append("CPU 不支持 FP8，请改用 none。")
+            notes.append("CPU 不支持 FP8，请改为全精度。")
     elif gpu is None:
         notes.append("没有可用的 CUDA GPU，生成时可能改走 CPU 或失败。")
     else:
@@ -118,11 +118,11 @@ def preset_from_controls(*, device: str, memory_budget_gib: float, quantization:
             notes.append("此 GPU 不支持 FP8（需要 compute ≥ 8.9），生成时可能失败。")
         if memory_budget_gib > gpu.vram_gib + 0.05:
             notes.append(
-                f"预算 {memory_budget_gib:g} GiB 大于本机显存 {gpu.vram_gib:.1f} GiB，可能 OOM。"
+                f"预算 {memory_budget_gib:g} GiB 大于本机显存 {gpu.vram_gib:.1f} GiB，可能显存不足。"
             )
         tight = memory_budget_gib <= 12 or gpu.vram_gib <= 12
         if tight and not offload_ar:
-            notes.append("≤12 GiB 上关闭 offload_ar 更容易显存不足。")
+            notes.append("≤12 GiB 上关闭「卸载 AR」更容易显存不足。")
         if tight and quantization == "none":
             notes.append("≤12 GiB 建议 FP8（compute ≥ 8.9）；当前为全精度。")
     return HardwarePreset(
@@ -179,11 +179,11 @@ def hardware_html(snapshot: HardwareSnapshot, preset: HardwarePreset) -> str:
     elif snapshot.recommended.device == "mps":
         vram = "共享"
         gpu_line = "Apple MPS"
+    quant = "fp8" if preset.quantization == "fp8" else "全精度"
+    offload = "卸载 AR" if preset.offload_ar else "不卸载 AR"
     params = (
-        f"{preset.device} · budget {preset.memory_budget_gib:g} GiB · "
-        f"{preset.quantization} · "
-        f"{'offload_ar' if preset.offload_ar else 'no offload'} · "
-        f"vae {preset.vae_core_frames}"
+        f"{preset.device} · 预算 {preset.memory_budget_gib:g} GiB · "
+        f"{quant} · {offload} · VAE {preset.vae_core_frames}"
     )
     warning = next((item for item in preset.notes
                     if any(token in item for token in ("OOM", "失败", "不足", "不支持"))), None)
@@ -258,7 +258,7 @@ def _eight_gb_preset(base: HardwarePreset, gpu: DeviceInfo | None) -> HardwarePr
 def _twenty_four_gb_preset(base: HardwarePreset, gpu: DeviceInfo | None) -> HardwarePreset:
     notes = []
     if gpu is not None and gpu.vram_gib < 24:
-        notes.append(f"本机显存约 {gpu.vram_gib:.1f} GiB，使用 24 GB 预设可能 OOM。")
+        notes.append(f"本机显存约 {gpu.vram_gib:.1f} GiB，使用 24 GB 预设可能显存不足。")
     notes.append("官方 24 GB BF16 预设。")
     return HardwarePreset(
         device=base.device, memory_budget_gib=24, quantization="none",

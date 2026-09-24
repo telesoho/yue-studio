@@ -303,7 +303,7 @@ function renderJianpu() {
   paper.innerHTML = ''
     + '<div class="jianpu-head">'
     + '<span class="jp-key">' + tonicLabel + '</span>'
-    + '<span class="jp-time">♩=' + tempo + ' · jianpu</span>'
+    + '<span class="jp-time">♩=' + tempo + ' · 简谱</span>'
     + '<span class="jp-hint">简谱（abc2svg）</span>'
     + '</div>'
     + '<div class="jianpu-body">' + buf.join("") + '</div>';
