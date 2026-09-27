@@ -59,6 +59,12 @@ uv run yue-studio
 
 翻唱从音频转谱时，工作室会自动下载 SheetSage2 和它的父编码器 MERT-v2-FullSong（若尚未就绪），并创建独立的 Python 3.11 虚拟环境安装其依赖（与 YuE2 不能共用一套包）。也可在「模型与资源」页预先下载；下载 SheetSage2 后同样会自动配置该环境。可选：`$env:YUE_STUDIO_SHEETSAGE_PYTHON` 指向已有解释器。转谱需要本机 FFmpeg。
 
+## 识谱
+
+「识谱」页上传整首歌。SheetSage2 以 `full` 写出带和弦的旋律谱（`score.abc`），然后在独立的 Python 3.12 环境 `.venv-lyrics` 里用人声分离（Demucs `htdemucs`）和 faster-whisper `large-v3`（int8）识别歌词。首次运行会创建该环境并下载权重到 `models/`；三者不会同时留在显存里。需要本机 FFmpeg。可选：`$env:YUE_STUDIO_LYRICS_PYTHON` 指向已有解释器。
+
+人声分离失败时改用原混音继续识别。歌词识别失败时仍保留曲谱和和弦。对齐结果写入同目录的 `lyrics.txt` 与 `alignment.json`。保存的 `score.abc` 不含歌词行；谱面上的词只用于显示。请对照原曲校对音高、和弦和歌词。
+
 ## 测试
 
 离线、不下载权重、不需要 GPU：

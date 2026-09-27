@@ -37,9 +37,17 @@ from .models import (
     required_ready,
     scan_catalog,
 )
-from .paths import models_dir, outputs_dir, sheetsage_python, static_dir, studio_root, yue_root
+from .paths import (
+    lyrics_python,
+    models_dir,
+    outputs_dir,
+    sheetsage_python,
+    static_dir,
+    studio_root,
+    yue_root,
+)
 from .runner import PipelineSettings, StudioRunner, default_request
-from .score import CHORD_HEADERS, inspect_abc
+from .score import CHORD_HEADERS, inspect_abc, score_html
 from .sheetsage import ensure_sheetsage_env
 from .theme import CSS, FORCE_DARK, THEME
 
@@ -99,7 +107,8 @@ def _env_text() -> str:
         "",
         "依赖: " + ", ".join(f"{k}={v}" for k, v in report["versions"].items()),
         f"SheetSage2 解释器: {python or '未配置（翻唱转谱时自动安装）'}",
-        f"FFmpeg: {report.get('ffmpeg') or '未找到（翻唱转谱需要，请安装并加入 PATH）'}",
+        f"歌词识别解释器: {lyrics_python() or '未配置（识谱时自动安装）'}",
+        f"FFmpeg: {report.get('ffmpeg') or '未找到（翻唱转谱与识谱需要，请安装并加入 PATH）'}",
         "",
         LICENSE_NOTE,
     ]
@@ -165,13 +174,16 @@ def on_params(profile, gpu_device, budget, quantization, offload_ar, vae_core_fr
     return hardware_html(snapshot, preset), "\n".join(preset.notes), _env_text()
 
 
-def _score_outputs(abc: str):
+def _score_outputs(abc: str, display_abc: str | None = None):
     view = inspect_abc(abc or "")
     chords = view.chords or []
     status = "曲谱有效" if view.error is None else view.error
     if view.error is None and not chords:
         status = "曲谱有效（无和弦符号）"
-    return view.html, abc or "", chords, status
+    shown = view.html
+    if display_abc and display_abc.strip() and view.error is None and display_abc != (abc or ""):
+        shown = score_html(display_abc)
+    return shown, abc or "", chords, status
 
 
 def _file_path(value) -> str | None:
@@ -479,6 +491,46 @@ def transcribe_cover(audio, abc_file, abc_text, task_label,
         yield result["directory"], score_html, abc, chords, progress_html, log_text + "\n" + note
 
 
+def transcribe_score_song(audio, language,
+                          profile, gpu_device, budget, quantization, offload_ar, vae_core_frames):
+    sync_hardware(profile, gpu_device, budget, quantization, offload_ar, vae_core_frames)
+    audio_path = _file_path(audio)
+    if not audio_path:
+        raise gr.Error("请上传音频")
+    header = "=== 命令 ===\n识谱（SheetSage2 转谱，随后分离人声并识别歌词）\n\n=== 参数 ===\n" + (
+        f"audio={audio_path}\nlanguage={language or 'zh'}\ntask=full"
+    )
+    for phase, log_text, payload, progress_html in _logged_work(
+            header,
+            lambda on_status: get_runner().transcribe_score(
+                audio_path, language=language or "zh", on_status=on_status)):
+        if phase == "running":
+            yield (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+                   progress_html, log_text, gr.skip(), gr.skip())
+            continue
+        if phase == "failed":
+            yield (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
+                   progress_html, log_text, gr.skip(), gr.skip())
+            return
+        result = payload
+        score_html, abc, chords, score_status = _score_outputs(
+            result["abc"], result.get("display_abc"))
+        warnings = result.get("warnings") or []
+        note = score_status
+        if warnings:
+            note = "识谱警告:\n" + "\n".join(map(str, warnings)) + "\n" + note
+        yield (
+            result["directory"], score_html, abc, chords, result.get("lyrics") or "",
+            progress_html, log_text + "\n" + note, abc, result.get("display_abc") or "",
+        )
+
+
+def on_score_abc_edit(abc, clean, display):
+    use_display = bool(display) and (abc or "") == (clean or "")
+    html, _text, chords, _status = _score_outputs(abc or "", display if use_display else None)
+    return html, chords
+
+
 def render_cover(style, lyrics, seed, identifier, abc_text, keep_chords, _transcribe_dir,
                  profile, gpu_device, budget, quantization, offload_ar, vae_core_frames):
     sync_hardware(profile, gpu_device, budget, quantization, offload_ar, vae_core_frames)
@@ -545,7 +597,7 @@ def select_history(evt: gr.SelectData, paths):
         entry = load_entry(paths[index])
     except ValueError as exc:
         raise gr.Error(str(exc)) from exc
-    score_html, _abc, chords, status = _score_outputs(entry.abc)
+    score_html, _abc, chords, status = _score_outputs(entry.abc, entry.display_abc or None)
     audio = str(entry.audio) if entry.audio else None
     info = f"{entry.directory}\n{status}"
     return (
@@ -554,7 +606,7 @@ def select_history(evt: gr.SelectData, paths):
         score_html,
         chords,
         entry.request.get("style") or "",
-        entry.request.get("lyrics") or "",
+        entry.lyrics or entry.request.get("lyrics") or "",
         info,
     )
 
@@ -648,7 +700,7 @@ def build_app():
             '<span class="studio-seal" aria-hidden="true">乐</span>'
             "<div>"
             "<h1>Yue Studio</h1>"
-            "<p>曲谱 · 和弦 · 翻唱 · 历史</p>"
+            "<p>曲谱 · 识谱 · 翻唱 · 历史</p>"
             "</div></div>"
             '<div class="studio-tags">'
             '<span class="studio-tag warm"><span class="dot"></span>本地推理</span>'
@@ -827,6 +879,50 @@ def build_app():
                     show_progress="minimal",
                 )
                 cover_abc.blur(on_abc_edit, [cover_abc], [cover_score, cover_chords])
+
+            with gr.Tab("识谱", id="transcribe"):
+                score_job = gr.State(None)
+                score_clean = gr.State("")
+                score_display = gr.State("")
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=5, min_width=320):
+                        score_audio = gr.Audio(
+                            label="源音频（可回放）", type="filepath", sources=["upload"],
+                        )
+                        score_language = gr.Radio(
+                            [("中文", "zh"), ("English", "en"), ("自动", "auto")],
+                            value="zh", label="歌词语言",
+                        )
+                        score_btn = gr.Button("开始识谱", variant="primary")
+                        score_progress = gr.HTML(value=_progress_markup(), label="进度",
+                                                 elem_classes=["job-progress-wrap"])
+                        score_lyrics = gr.Textbox(label="歌词（可校对）", lines=8)
+                        score_status = gr.Textbox(
+                            label="命令 / 参数 / 日志", lines=10, max_lines=28,
+                            elem_classes=["invoke-log"],
+                        )
+                    with gr.Column(scale=6, min_width=360):
+                        score_view = gr.HTML(
+                            value=_score_outputs("")[0], elem_classes=["staff-panel"],
+                            padding=False,
+                        )
+                        score_abc = gr.Textbox(label="曲谱 ABC", lines=10)
+                        score_chords = gr.Dataframe(
+                            headers=CHORD_HEADERS, value=empty_chords,
+                            label="和弦", wrap=True, interactive=False,
+                        )
+                score_btn.click(
+                    transcribe_score_song,
+                    [score_audio, score_language, *hw_inputs],
+                    [score_job, score_view, score_abc, score_chords, score_lyrics,
+                     score_progress, score_status, score_clean, score_display],
+                    show_progress="minimal",
+                )
+                score_abc.blur(
+                    on_score_abc_edit,
+                    [score_abc, score_clean, score_display],
+                    [score_view, score_chords],
+                )
 
             with gr.Tab("历史", id="history"):
                 hist_paths = gr.State(init_hist_paths)

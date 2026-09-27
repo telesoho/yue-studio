@@ -12,7 +12,7 @@ from .paths import outputs_dir
 JOB_DIR = re.compile(r"^(song|plan|transcribe)-(\d{8}-\d{6})-(.+)$")
 KIND_LABELS = {"song": "生成", "plan": "规划", "transcribe": "转谱"}
 TABLE_HEADERS = ["时间", "类型", "标识", "时长", "风格"]
-EMPTY_NOTE = "还没有可播放或可查看的记录。在「生成」或「翻唱」页完成后会出现在这里。"
+EMPTY_NOTE = "还没有可播放或可查看的记录。在「生成」「识谱」或「翻唱」页完成后会出现在这里。"
 STYLE_LIMIT = 40
 
 
@@ -27,6 +27,8 @@ class HistoryEntry:
     request: dict = field(default_factory=dict)
     audio_seconds: float | None = None
     has_plan: bool = False
+    lyrics: str = ""
+    display_abc: str = ""
 
     def row(self) -> list[str]:
         return [
@@ -151,6 +153,9 @@ def load_entry(directory: Path, *, root: Path | None = None) -> HistoryEntry:
         if isinstance(nested, dict):
             request = nested
     abc = _read_text(path / "score.abc")
+    lyrics = _read_text(path / "lyrics.txt")
+    alignment = _read_json(path / "alignment.json") or {}
+    display = alignment.get("display_abc") if isinstance(alignment.get("display_abc"), str) else ""
     return HistoryEntry(
         directory=entry.directory,
         kind=entry.kind,
@@ -161,6 +166,8 @@ def load_entry(directory: Path, *, root: Path | None = None) -> HistoryEntry:
         request=request,
         audio_seconds=entry.audio_seconds,
         has_plan=entry.has_plan,
+        lyrics=lyrics,
+        display_abc=display,
     )
 
 

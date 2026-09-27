@@ -67,3 +67,20 @@ def sheetsage_python() -> Path | None:
         return path if path.is_file() else None
     candidate = venv_python(sheetsage_venv_dir())
     return candidate if candidate.is_file() else None
+
+
+def lyrics_venv_dir() -> Path:
+    return studio_root() / ".venv-lyrics"
+
+
+def lyrics_python() -> Path | None:
+    env = os.environ.get("YUE_STUDIO_LYRICS_PYTHON")
+    if env:
+        path = Path(env).expanduser()
+        return path if path.is_file() else None
+    candidate = venv_python(lyrics_venv_dir())
+    return candidate if candidate.is_file() else None
+
+
+def lyrics_worker_script() -> Path:
+    return Path(__file__).resolve().parent / "lyrics_worker.py"

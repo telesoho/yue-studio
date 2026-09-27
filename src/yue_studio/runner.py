@@ -6,7 +6,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .align import align_lyrics, write_lyric_files
 from .jobs import new_job_dir, song_id
+from .lyrics import recognize_lyrics, separate_vocals
 from .models import download_by_name, required_ready, scan_catalog
 from .paths import models_dir, outputs_dir, yue_root
 from .sheetsage import run_transcribe
@@ -321,6 +323,81 @@ class StudioRunner:
                 "warnings": warnings,
                 "score": str(score),
             }
+
+    def transcribe_score(self, audio: str | Path, *, language="zh",
+                         identifier="score", on_status=None) -> dict:
+        """Melody and chords from SheetSage2, then vocals, lyrics, and alignment."""
+        with self.lock:
+            if on_status:
+                on_status("卸载 YuE2 以便识谱占用 GPU…")
+            self.unload()
+            sheetsage = _ensure_resource("SheetSage2", on_status=on_status)
+            mert = _ensure_resource("MERT-v2-FullSong", on_status=on_status)
+            directory = new_job_dir(outputs_dir(), "transcribe", identifier)
+            device = "cpu" if self._pipeline_kwargs.get("device") == "cpu" else "cuda"
+            dtype = "bf16" if device == "cuda" else "fp32"
+            score = run_transcribe(
+                Path(audio), directory, task="full", model=sheetsage.path,
+                base_model=mert.path, device=device, dtype=dtype, on_status=on_status,
+            )
+            abc = score.read_text(encoding="utf-8")
+            warnings = _transcription_warnings(directory)
+            words, lyric_error = _recognize_score_lyrics(
+                Path(audio), directory, language=language, device=device,
+                warnings=warnings, on_status=on_status,
+            )
+            alignment = align_lyrics(abc, words)
+            warnings.extend(alignment.warnings)
+            if lyric_error:
+                warnings.append("歌词识别失败：" + lyric_error)
+            write_lyric_files(directory, alignment, language=language, warnings=warnings)
+            return {
+                "directory": str(directory),
+                "abc": abc,
+                "display_abc": alignment.display_abc,
+                "lyrics": alignment.lyrics,
+                "warnings": warnings,
+                "lyric_error": lyric_error,
+                "score": str(score),
+            }
+
+
+def _transcription_warnings(directory: Path) -> list:
+    warnings_path = directory / "transcription_manifest.json"
+    if not warnings_path.is_file():
+        return []
+    import json
+    data = json.loads(warnings_path.read_text(encoding="utf-8"))
+    return list(data.get("warnings") or [])
+
+
+def _recognize_score_lyrics(audio: Path, directory: Path, *, language, device,
+                            warnings: list, on_status=None) -> tuple[list[dict], str | None]:
+    source = audio
+    try:
+        if on_status:
+            on_status("正在分离人声…")
+        source = separate_vocals(
+            audio, directory / "separated", device=device, on_status=on_status,
+        )
+    except Exception as exc:
+        warnings.append(f"人声分离失败，改用原混音：{exc}")
+        if on_status:
+            on_status(warnings[-1])
+        source = audio
+    try:
+        if on_status:
+            on_status("正在识别歌词…")
+        words = recognize_lyrics(
+            source, directory / "words.json", language=language, device=device,
+            on_status=on_status,
+        )
+        return words, None
+    except Exception as exc:
+        message = f"{exc}"
+        if on_status:
+            on_status("歌词识别失败：" + message)
+        return [], message
 
 
 def _ensure_resource(name: str, *, on_status=None):

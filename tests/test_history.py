@@ -121,7 +121,19 @@ def test_load_entry_reads_request_and_plan_fallback(tmp_path: Path):
     transcribe = _transcribe_dir(tmp_path, "20260920-215000")
     from_tr = load_entry(transcribe, root=tmp_path)
     assert from_tr.request == {}
+    assert from_tr.lyrics == ""
+    assert from_tr.display_abc == ""
     assert "T:cover" in from_tr.abc
+
+    (transcribe / "lyrics.txt").write_text("[Verse]\n春眠不觉\n", encoding="utf-8")
+    (transcribe / "alignment.json").write_text(
+        '{"display_abc": "X:1\\nw: 春"}', encoding="utf-8",
+    )
+    with_lyrics = load_entry(transcribe, root=tmp_path)
+    assert with_lyrics.request == {}
+    assert with_lyrics.lyrics == "[Verse]\n春眠不觉\n"
+    assert "w: 春" in with_lyrics.display_abc
+    assert "T:cover" in with_lyrics.abc
 
 
 def test_delete_entry_only_under_root(tmp_path: Path):
