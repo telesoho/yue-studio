@@ -48,6 +48,7 @@ from .paths import (
 )
 from .runner import PipelineSettings, StudioRunner, default_request
 from .score import CHORD_HEADERS, inspect_abc, score_html
+from .score_edit import EDITOR_HEAD, OPEN_EDITOR_JS, commit_edited_abc, write_edited_score
 from .sheetsage import ensure_sheetsage_env
 from .theme import CSS, FORCE_DARK, THEME
 
@@ -531,6 +532,47 @@ def on_score_abc_edit(abc, clean, display):
     return html, chords
 
 
+def apply_score_edit(edited, previous, _clean, job):
+    if edited == "__YUE_EDITOR_MISSING__":
+        raise gr.Error("简谱编辑窗口没有载入")
+    if (edited or "") == (previous or ""):
+        if not str(edited or "").strip():
+            raise gr.Error("请先识谱")
+        return (gr.skip(),) * 6
+    committed = commit_edited_abc(edited or "")
+    if committed.error:
+        raise gr.Error("改后的曲谱无法解析：" + committed.error)
+    if job:
+        write_edited_score(job, committed)
+    shown, abc, chords, _status = _score_outputs(committed.clean, committed.display)
+    return (
+        shown, abc, chords, committed.lyrics, committed.clean, committed.display,
+    )
+
+
+def apply_history_edit(edited, previous, _clean, job):
+    if edited == "__YUE_EDITOR_MISSING__":
+        raise gr.Error("简谱编辑窗口没有载入")
+    if (edited or "") == (previous or ""):
+        if not str(edited or "").strip():
+            raise gr.Error("请先在历史里选择一条转谱")
+        return (gr.skip(),) * 5
+    if not job:
+        raise gr.Error("请先在历史里选择一条转谱")
+    try:
+        entry = load_entry(job)
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+    if entry.kind != "transcribe":
+        raise gr.Error("只有转谱记录可以编辑简谱")
+    committed = commit_edited_abc(edited or "")
+    if committed.error:
+        raise gr.Error("改后的曲谱无法解析：" + committed.error)
+    write_edited_score(job, committed)
+    shown, _abc, chords, _status = _score_outputs(committed.clean, committed.display)
+    return shown, chords, committed.lyrics, committed.clean, committed.display
+
+
 def render_cover(style, lyrics, seed, identifier, abc_text, keep_chords, _transcribe_dir,
                  profile, gpu_device, budget, quantization, offload_ar, vae_core_frames):
     sync_hardware(profile, gpu_device, budget, quantization, offload_ar, vae_core_frames)
@@ -600,6 +642,7 @@ def select_history(evt: gr.SelectData, paths):
     score_html, _abc, chords, status = _score_outputs(entry.abc, entry.display_abc or None)
     audio = str(entry.audio) if entry.audio else None
     info = f"{entry.directory}\n{status}"
+    editable = entry.kind == "transcribe" and bool((entry.abc or "").strip())
     return (
         str(entry.directory),
         audio,
@@ -608,6 +651,9 @@ def select_history(evt: gr.SelectData, paths):
         entry.request.get("style") or "",
         entry.lyrics or entry.request.get("lyrics") or "",
         info,
+        entry.abc or "",
+        entry.display_abc or "",
+        gr.update(visible=editable),
     )
 
 
@@ -653,6 +699,7 @@ def delete_history(selected, confirm):
     yield (
         gr.skip(), gr.skip(), gr.skip(), selected, None,
         gr.skip(), gr.skip(), gr.skip(), gr.skip(), "正在删除…", False,
+        "", "", gr.update(visible=False),
     )
     try:
         delete_entry(selected)
@@ -661,6 +708,7 @@ def delete_history(selected, confirm):
             gr.skip(), gr.skip(), gr.skip(), selected, gr.skip(),
             gr.skip(), gr.skip(), gr.skip(), gr.skip(),
             f"无法删除（文件可能正在播放）: {exc}", False,
+            gr.skip(), gr.skip(), gr.skip(),
         )
         return
     except ValueError as exc:
@@ -668,11 +716,13 @@ def delete_history(selected, confirm):
             gr.skip(), gr.skip(), gr.skip(), selected, gr.skip(),
             gr.skip(), gr.skip(), gr.skip(), gr.skip(),
             str(exc), False,
+            gr.skip(), gr.skip(), gr.skip(),
         )
         return
     rows, paths, note = history_table()
     yield (
         rows, paths, note, None, None, score_html, chords, "", "", "已删除。", False,
+        "", "", gr.update(visible=False),
     )
 
 
@@ -690,6 +740,7 @@ def build_app():
         title="Yue Studio",
         css=CSS,
         js=FORCE_DARK,
+        head=EDITOR_HEAD,
         theme=THEME,
         fill_width=True,
         elem_id="yue-studio",
@@ -882,8 +933,10 @@ def build_app():
 
             with gr.Tab("识谱", id="transcribe"):
                 score_job = gr.State(None)
-                score_clean = gr.State("")
-                score_display = gr.State("")
+                # Hidden textboxes, not gr.State: Gradio keeps State on the server and
+                # sends null to the browser, so the editor script never sees the ABC.
+                score_clean = gr.Textbox(value="", visible=False)
+                score_display = gr.Textbox(value="", visible=False)
                 with gr.Row(equal_height=False):
                     with gr.Column(scale=5, min_width=320):
                         score_audio = gr.Audio(
@@ -902,6 +955,7 @@ def build_app():
                             elem_classes=["invoke-log"],
                         )
                     with gr.Column(scale=6, min_width=360):
+                        score_edit_btn = gr.Button("编辑曲谱")
                         score_view = gr.HTML(
                             value=_score_outputs("")[0], elem_classes=["staff-panel"],
                             padding=False,
@@ -923,10 +977,19 @@ def build_app():
                     [score_abc, score_clean, score_display],
                     [score_view, score_chords],
                 )
+                score_edit_btn.click(
+                    apply_score_edit,
+                    [score_display, score_display, score_clean, score_job],
+                    [score_view, score_abc, score_chords, score_lyrics,
+                     score_clean, score_display],
+                    js=OPEN_EDITOR_JS,
+                )
 
             with gr.Tab("历史", id="history"):
                 hist_paths = gr.State(init_hist_paths)
                 hist_selected = gr.State(None)
+                hist_clean = gr.Textbox(value="", visible=False)
+                hist_display = gr.Textbox(value="", visible=False)
                 hist_table = gr.Dataframe(
                     headers=TABLE_HEADERS, value=init_hist_rows, wrap=True,
                     interactive=False, label="点选一行查看并播放",
@@ -946,6 +1009,7 @@ def build_app():
                         hist_lyrics = gr.Textbox(label="歌词", lines=8, interactive=False)
                         hist_info = gr.Textbox(label="路径", lines=3, interactive=False)
                     with gr.Column(scale=6, min_width=360):
+                        hist_edit_btn = gr.Button("编辑曲谱", visible=False)
                         hist_score = gr.HTML(
                             value=_score_outputs("")[0], elem_classes=["staff-panel"],
                             padding=False,
@@ -960,7 +1024,14 @@ def build_app():
                 hist_table.select(
                     select_history, [hist_paths],
                     [hist_selected, hist_audio, hist_score, hist_chords,
-                     hist_style, hist_lyrics, hist_info],
+                     hist_style, hist_lyrics, hist_info,
+                     hist_clean, hist_display, hist_edit_btn],
+                )
+                hist_edit_btn.click(
+                    apply_history_edit,
+                    [hist_display, hist_display, hist_clean, hist_selected],
+                    [hist_score, hist_chords, hist_lyrics, hist_clean, hist_display],
+                    js=OPEN_EDITOR_JS,
                 )
                 hist_load.click(
                     load_history_to_generate,
@@ -972,7 +1043,7 @@ def build_app():
                     delete_history, [hist_selected, hist_confirm],
                     [hist_table, hist_paths, hist_note, hist_selected, hist_audio,
                      hist_score, hist_chords, hist_style, hist_lyrics, hist_info,
-                     hist_confirm],
+                     hist_confirm, hist_clean, hist_display, hist_edit_btn],
                     show_progress="minimal",
                 )
 

@@ -302,8 +302,17 @@ abc2svg.jianpu = {
             out_svg('">' + p + '</text>\n')
         }
 
+        // Sharp, flat, and natural sit on the digit's upper-left corner.
+        // Music y grows upward; the digit baseline is y+8. Flats hang lower.
+        function out_acc(x, y, p) {
+            out_svg('<text class="jacc" x="')
+            out_sxsy(x, '" y="', y)
+            out_svg('">' + p + '</text>\n')
+        }
+
         function out_txt(x, y, p) {
-            out_svg('<text class="fj" x="')
+            var id = String(p_voice.id || "v").replace(/[^A-Za-z0-9_-]/g, "") || "v"
+            out_svg('<text class="fj v-' + id + '" x="')
             out_sxsy(x, '" y="', y)
             out_svg('">' + p + '</text>\n')
         }
@@ -318,7 +327,7 @@ abc2svg.jianpu = {
                     continue
                 }
                 if (note.acc)
-                    out_mus(x - 12, y + 12, abc2svg.jianpu.acc_tb[note.acc + 2])
+                    out_acc(x - 7, y + (note.acc < 0 ? 19 : 21), abc2svg.jianpu.acc_tb[note.acc + 2])
                 if (note.jo > 2) {
                     out_mus(x - 1, y + 22, dot)
                     if (note.jo > 3) {
@@ -481,8 +490,8 @@ abc2svg.jianpu = {
             case C.NOTE:
                 for (m = 0; m <= s.nhd; m++) {
                     note = s.notes[m]
-                    if (note.acc && s.wl < 14)
-                        s.wl = 14
+                    if (note.acc && s.wl < 9)
+                        s.wl = 9
                 }
                 break
         }
@@ -498,7 +507,7 @@ abc2svg.jianpu = {
         abc.set_width = abc2svg.jianpu.set_width.bind(abc, abc.set_width)
         abc.get_glyphs().gstc = '<circle id="gstc" cx="0" cy="-3" r="2"/>'
         abc.get_decos().gstc = "0 gstc 5 1 1"
-        abc.add_style("\n.fj{font:15px sans-serif}")
+        abc.add_style("\n.fj{font:15px sans-serif}\n.jacc{font-family:music;font-size:17px}")
     }
 }
 abc2svg.modules.hooks.push(abc2svg.jianpu.set_hooks)

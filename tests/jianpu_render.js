@@ -62,11 +62,11 @@ function render(abc2svg, src) {
   return {
     svg,
     errors,
-    hasDigits: /class="fj"[^>]*>[1-7]/.test(svg),
+    hasDigits: /class="fj(?: [^"]*)?"[^>]*>[1-7]/.test(svg),
     hasUndefined: /undefined/i.test(svg),
     hasLongVoice: /Vocal Melody|Ins Melody/.test(svg),
     hasShortVoice: /唱/.test(svg) && /伴/.test(svg),
-    hasRestZero: /class="fj"[^>]*>0/.test(svg),
+    hasRestZero: /class="fj(?: [^"]*)?"[^>]*>0/.test(svg),
     // Whole-rest ledger from hl_rest(set_hl(..., -7, 7)) → m-7.00 0h14.00
     hasRestLedger: /m-7\.00 0h14\.00/.test(svg),
   };
