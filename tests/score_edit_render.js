@@ -205,4 +205,46 @@ red += check(
   insEdit.error || ""
 );
 
+const lyricHits = editor.assignLyricHits(
+  [
+    { x: 90, y: 52, index: 0, voice: "Vocal" },
+    { x: 110, y: 52, index: 1, voice: "Vocal" },
+    { x: 130, y: 52, index: 2, voice: "Vocal" },
+    { x: 90, y: 110, index: 0, voice: "Ins" },
+    { x: 90, y: 200, index: 3, voice: "Vocal" },
+  ],
+  [
+    { x: 90, y: 20, name: "chord" },
+    { x: 89, y: 82, name: "春" },
+    { x: 131, y: 82, name: "眠" },
+    { x: 90, y: 150, name: "next-chord" },
+    { x: 90, y: 230, name: "晓" },
+  ],
+  { 0: true, 2: true, 3: true }
+);
+red += check(
+  "lyric glyphs bind to the notes above, skipping rests, melisma, and chords",
+  lyricHits.map((hit) => hit.glyph.name + ":" + hit.index).join(",") === "春:0,眠:2,晓:3",
+  lyricHits.map((hit) => hit.glyph.name + ":" + hit.index).join(",")
+);
+
+const sung = editor.editScore(DISPLAY, { op: "lyric", index: 0, text: "山" });
+const sungSvg = render(sung.abc);
+red += check(
+  "edited lyric is drawn under the vocal note",
+  !sung.error && sungSvg.includes(">山<") && !sungSvg.includes(">春<"),
+  sung.error || ""
+);
+const held = [
+  "X:1", "T:", "M:4/4", "L:1/16", "Q:1/4=120", "K:C", "V: Vocal",
+  "C4D4E4|", "w: 春 - 晓", "",
+].join("\n");
+const heldEvents = editor.listEvents(held);
+red += check(
+  "melisma is kept and not drawn as a syllable",
+  heldEvents.map((ev) => ev.lyric).join(" ") === "春 - 晓" &&
+    heldEvents.map((ev) => editor.lyricIsDrawn(ev.lyric)).join(",") === "true,false,true",
+  heldEvents.map((ev) => ev.lyric).join(" ")
+);
+
 process.exit(red ? 1 : 0);

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>lyric edit</title>
+</head>
+<body>
+  <script src="/static/abc2svg/abc2svg-1.js"></script>
+  <script src="/static/abc2svg/jianpu-1.js"></script>
+  <script src="/static/score_edit.js"></script>
+  <script>
+    const abc = [
+      "X:1", "T:", "M:4/4", "L:1/16", "Q:1/4=120", "K:C",
+      "V: Vocal",
+      '"C"C4D4z4E4|',
+      "w: 春 - 晓",
+      "V: Ins",
+      "z16|",
+      ""
+    ].join("\n");
+    window.__done = null;
+    yueScoreEditor.open(abc).then((value) => { window.__done = value; });
+  </script>
+</body>
+</html>
