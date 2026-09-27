@@ -105,6 +105,17 @@ red += check(
   play.notes.length === 8 && play.notes[0].midi === 60 && Math.abs(play.notes[0].duration - 0.5) < 1e-6,
   play.error || ""
 );
+const marks = editor.playMarks(DISPLAY);
+const atBeat = editor.cursorAt(marks, 0.75);
+const atBar = editor.cursorAt(marks, 2.1);
+red += check(
+  "playhead walks the vocal digits and rests",
+  marks.filter((mark) => mark.voice === "Vocal").length === 8 &&
+    marks.some((mark) => mark.voice === "Ins" && mark.slice === 1 && Math.abs(mark.start - 2) < 1e-6) &&
+    atBeat && atBeat.voice === "Vocal" && atBeat.index === 1 &&
+    atBar && atBar.voice === "Vocal" && atBar.index === 4,
+  atBeat ? atBeat.voice + ":" + atBeat.index : "missing"
+);
 
 const keys = editor.commandOfKey("5");
 red += check("key 5", keys && keys.op === "degree" && keys.degree === 5, "");
@@ -125,6 +136,15 @@ const LONG = [
   "z16C8|",
   "",
 ].join("\n");
+const restMarks = editor.playMarks(LONG);
+const restAt = editor.cursorAt(restMarks, 1.2);
+red += check(
+  "playhead steps across a split rest",
+  restMarks.filter((mark) => mark.index === 0).length === 4 &&
+    restAt && restAt.index === 0 && restAt.slice === 2 &&
+    editor.cursorAt(restMarks, 2.1).index === 1,
+  restAt ? "slice=" + restAt.slice : "missing"
+);
 const longSvg = render(LONG);
 const longHeads = digitHeads(longSvg);
 const longMap = editor.headIndexes(LONG);
@@ -239,6 +259,16 @@ const held = [
   "X:1", "T:", "M:4/4", "L:1/16", "Q:1/4=120", "K:C", "V: Vocal",
   "C4D4E4|", "w: 春 - 晓", "",
 ].join("\n");
+const kept = editor.editScore([
+  "X:1", "T:", "M:4/4", "L:1/16", "Q:1/4=120", "K:C", "V: Vocal",
+  "C4D4z4E4|", "w: 春 - 晓", "",
+].join("\n"), { op: "lyric", index: 0, text: "山" });
+const keptSvg = render(kept.abc);
+red += check(
+  "a rest does not swallow the next lyric",
+  !kept.error && kept.abc.includes("w: 山 - 晓") && keptSvg.includes(">山<") && keptSvg.includes(">晓<"),
+  kept.error || kept.abc
+);
 const heldEvents = editor.listEvents(held);
 red += check(
   "melisma is kept and not drawn as a syllable",

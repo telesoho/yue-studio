@@ -461,7 +461,8 @@
     const musicLines = [...groups.keys()].sort((a, b) => b - a);
     for (const musicLine of musicLines) {
       const group = groups.get(musicLine);
-      const tokens = group.map(lyricToken);
+      // abc2svg skips rests, so a "*" written for a rest would land on the next note.
+      const tokens = group.filter((ev) => ev.kind === "note").map(lyricToken);
       const meaningful = tokens.some((token) => token !== "*" && token !== "-");
       const has = lines[musicLine + 1] && /^w:/.test(lines[musicLine + 1]);
       if (!meaningful) {
@@ -899,6 +900,51 @@
     };
   }
 
+  // One mark per drawn digit, including rest slices, so the playhead walks
+  // through 0s as well as sounding notes. Vocal is listed first.
+  function playMarks(abc) {
+    const parsed = collect(abc);
+    if (parsed.error) return [];
+    const quarter = 4 / parsed.header.lDen;
+    const bpm = parsed.header.bpm || 120;
+    const secPerUnit = quarter * 60 / bpm;
+    const marks = [];
+    function walk(events, voice) {
+      let units = 0;
+      for (const ev of events) {
+        const count = digitGlyphs(ev, parsed.header.lDen);
+        const sliceUnits = count ? ev.units / count : ev.units;
+        for (let slice = 0; slice < count; slice++) {
+          marks.push({
+            voice: voice,
+            index: ev.index,
+            slice: slice,
+            start: (units + slice * sliceUnits) * secPerUnit,
+          });
+        }
+        units += ev.units;
+      }
+    }
+    walk(parsed.events, "Vocal");
+    walk(parsed.ins || [], "Ins");
+    return marks;
+  }
+
+  // The glyph that playback has reached: latest start at or before now.
+  // A tie stays on the vocal digit.
+  function cursorAt(marks, now) {
+    if (!marks || !marks.length) return null;
+    let best = null;
+    for (const mark of marks) {
+      if (mark.start > now + 1e-3) continue;
+      const later = !best || mark.start > best.start + 1e-3;
+      const vocalTie = best && Math.abs(mark.start - best.start) <= 1e-3
+        && mark.voice === "Vocal" && best.voice !== "Vocal";
+      if (later || vocalTie) best = mark;
+    }
+    return best || marks[0];
+  }
+
   function inspectScore(abc) {
     const parsed = collect(abc);
     if (parsed.error) return { error: parsed.error, events: [], bpm: 120, keyName: "C" };
@@ -922,6 +968,8 @@
     osc: [],
     raf: 0,
     lyricInput: null,
+    playhead: null,
+    playKey: "",
   };
 
   function ensureDom() {
@@ -953,13 +1001,14 @@
       ".yue-jp-paper{position:relative;overflow:auto;padding:8px 16px 16px;flex:1;}",
       ".yue-jp-paper svg{max-width:100%;height:auto;}",
       ".yue-sel-box{fill:rgba(224,49,49,.16);stroke:#e03131;pointer-events:none;}",
-      ".yue-jp-lyric{position:absolute;z-index:3;min-width:2.4em;width:auto;font:inherit;",
+      ".yue-jp-lyric{position:absolute;z-index:3;box-sizing:border-box;font:inherit;",
       "font-weight:700;font-size:15px;padding:1px 6px;",
       "border-radius:8px;border:2px solid #e03131;background:#fffaf0;color:#2a1f12;}",
       "text[data-lyric]{cursor:text;}",
       "text[data-lyric].yue-sel{fill:#c22525;}",
       "text.fj.yue-sel{fill:#c22525;}",
       "text.fj.yue-play{fill:#0b7285;}",
+      "line.yue-playhead{stroke:#e03131;stroke-width:2;pointer-events:none;}",
     ].join("");
     document.head.appendChild(style);
     const root = document.createElement("div");
@@ -994,26 +1043,27 @@
       if (ev.target === root) finish(null);
     });
     ui.card.addEventListener("mousedown", (ev) => {
-      const button = ev.target.closest && ev.target.closest(".yue-jp-tools button");
-      if (button) ev.preventDefault();
+      const button = ev.target.closest && ev.target.closest("button");
+      if (!button) return;
+      if (button.closest(".yue-jp-tools") || button.getAttribute("data-act") === "ok") {
+        ev.preventDefault();
+      }
     });
     ui.card.addEventListener("click", (ev) => {
       const button = ev.target.closest && ev.target.closest("button");
       const act = button && button.getAttribute("data-act");
       if (act === "play") togglePlay();
       else if (act === "stop") stopPlayback();
-      else if (act === "ok") finish(ui.abc);
+      else if (act === "ok") {
+        commitOpenLyric();
+        finish(ui.abc);
+      }
       else if (act === "cancel") finish(null);
       else if (act === "lyric") beginLyric(ui.index);
       else if (button && ui.tools.contains(button)) {
         const command = commandFrom(button);
         if (!command) return;
-        if (ui.lyricInput) {
-          const input = ui.lyricInput;
-          const lyricIndex = ui.lyricIndex;
-          ui.lyricInput = null;
-          run({ op: "lyric", index: lyricIndex, voice: "Vocal", slice: null, text: input.value });
-        }
+        commitOpenLyric();
         run(command);
       }
     });
@@ -1251,6 +1301,75 @@
     else if (box.bottom > frame.bottom - 4) host.scrollTop += box.bottom - (frame.bottom - 4);
   }
 
+  function headFor(mark) {
+    if (!mark) return null;
+    return heads().find((el) =>
+      (el.dataset.voice || "Vocal") === mark.voice
+      && Number(el.dataset.idx) === mark.index
+      && Number(el.dataset.slice || 0) === mark.slice
+    ) || null;
+  }
+
+  function systemSpan(svg) {
+    const parts = String(svg.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
+    if (parts.length === 4 && parts.every((n) => Number.isFinite(n)) && parts[3] > 0) {
+      return { y: parts[1], h: parts[3] };
+    }
+    try {
+      const bb = svg.getBBox();
+      return { y: bb.y, h: bb.height || 40 };
+    } catch (err) {
+      return { y: 0, h: 40 };
+    }
+  }
+
+  function clearPlayhead() {
+    if (ui.playhead) ui.playhead.remove();
+    ui.playhead = null;
+    ui.playKey = "";
+  }
+
+  function drawPlayhead(node) {
+    const box = boxInSvg(node);
+    if (!box) return;
+    const span = systemSpan(box.svg);
+    const x = Math.max(0.8, box.x - Math.max(1.5, box.w * 0.2));
+    let line = ui.playhead;
+    if (!line || line.ownerSVGElement !== box.svg) {
+      if (line) line.remove();
+      line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("class", "yue-playhead");
+      line.setAttribute("stroke", "#e03131");
+      line.setAttribute("stroke-width", "2");
+      line.setAttribute("stroke-linecap", "round");
+      line.setAttribute("pointer-events", "none");
+      box.svg.appendChild(line);
+      ui.playhead = line;
+    }
+    line.setAttribute("x1", String(x));
+    line.setAttribute("x2", String(x));
+    line.setAttribute("y1", String(span.y + 2));
+    line.setAttribute("y2", String(span.y + Math.max(8, span.h - 2)));
+  }
+
+  function followPlayhead(node) {
+    const host = ui.paper;
+    if (!host || !node || !node.getBoundingClientRect) return;
+    const box = node.getBoundingClientRect();
+    const frame = host.getBoundingClientRect();
+    const margin = 48;
+    if (box.bottom > frame.bottom - margin) {
+      host.scrollTop += box.top - (frame.top + margin);
+    } else if (box.top < frame.top + 8) {
+      host.scrollTop -= frame.top + 8 - box.top;
+    }
+    if (box.right > frame.right - 16) {
+      host.scrollLeft += box.right - (frame.right - 16);
+    } else if (box.left < frame.left + 8) {
+      host.scrollLeft -= frame.left + 8 - box.left;
+    }
+  }
+
   function renderScore() {
     if (ui.lyricInput) ui.lyricInput = null;
     const info = inspectScore(ui.abc);
@@ -1349,9 +1468,12 @@
       maxGap: Math.max(48, noteH * 4),
     });
     hits.forEach((hit) => {
-      hit.glyph.el.dataset.lyric = "1";
-      hit.glyph.el.dataset.voice = "Vocal";
-      hit.glyph.el.dataset.idx = String(hit.index);
+      const el = hit.glyph.el;
+      el.dataset.lyric = "1";
+      el.dataset.voice = "Vocal";
+      el.dataset.idx = String(hit.index);
+      el.setAttribute("role", "button");
+      el.setAttribute("aria-label", "歌词 " + (el.textContent || "").replace(/\s+/g, ""));
     });
   }
 
@@ -1441,7 +1563,9 @@
     input.style.left = (box.left - host.left + ui.paper.scrollLeft) + "px";
     const top = glyph ? box.top - host.top : box.bottom - host.top + 2;
     input.style.top = (top + ui.paper.scrollTop) + "px";
-    input.style.minWidth = Math.max(36, Math.round(box.width + 18)) + "px";
+    const width = Math.max(36, Math.round(box.width + 18));
+    input.style.width = width + "px";
+    input.style.minWidth = width + "px";
   }
 
   function run(command) {
@@ -1547,6 +1671,7 @@
     }
     ui.osc = [];
     heads().forEach((el) => el.classList.remove("yue-play"));
+    clearPlayhead();
   }
 
   function togglePlay() {
@@ -1584,6 +1709,7 @@
       ui.osc.push(osc);
     }
     const total = score.notes.reduce((max, note) => Math.max(max, note.start + note.duration), 0);
+    const marks = playMarks(ui.abc);
     const tick = () => {
       if (ui.generation !== generation) return;
       const now = ui.ctx.currentTime - t0;
@@ -1598,10 +1724,29 @@
         const key = (el.dataset.voice || "Vocal") + ":" + el.dataset.idx;
         el.classList.toggle("yue-play", active.has(key));
       });
+      const mark = cursorAt(marks, Math.max(0, now));
+      const playKey = mark ? mark.voice + ":" + mark.index + ":" + mark.slice : "";
+      if (playKey !== ui.playKey) {
+        const node = headFor(mark);
+        if (node) {
+          ui.playKey = playKey;
+          drawPlayhead(node);
+          followPlayhead(node);
+        }
+      }
       if (now < total) ui.raf = requestAnimationFrame(tick);
       else stopPlayback();
     };
     tick();
+  }
+
+  function commitOpenLyric() {
+    const input = ui.lyricInput;
+    if (!input) return;
+    const lyricIndex = ui.lyricIndex;
+    const text = input.value;
+    ui.lyricInput = null;
+    run({ op: "lyric", index: lyricIndex, voice: "Vocal", slice: null, text: text });
   }
 
   function finish(value) {
@@ -1638,6 +1783,8 @@
     editScore: editScore,
     listEvents: listEvents,
     timeline: timeline,
+    playMarks: playMarks,
+    cursorAt: cursorAt,
     inspectScore: inspectScore,
     previewAbc: previewAbc,
     noteMidi: noteMidi,

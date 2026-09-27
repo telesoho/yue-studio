@@ -123,7 +123,7 @@ def test_duration_insert_delete_and_lyric():
     halved = _edit(DISPLAY, op="duration", index=0, factor=0.5)
     assert halved["error"] is None
     assert '"C"C2z2D4E4F4|' in halved["abc"]
-    assert "w: 春 * 眠 不 觉 晓 处 处 闻" in halved["abc"]
+    assert "w: 春 眠 不 觉 晓 处 处 闻" in halved["abc"]
 
     blocked = _edit(DISPLAY, op="duration", index=0, factor=2)
     assert blocked["error"]
@@ -156,7 +156,7 @@ def test_duration_insert_delete_and_lyric():
     deleted = _edit(DISPLAY, op="delete", index=1)
     assert deleted["error"] is None
     assert '"C"C4z4E4F4|' in deleted["abc"]
-    assert "w: 春 * 不 觉 晓 处 处 闻" in deleted["abc"]
+    assert "w: 春 不 觉 晓 处 处 闻" in deleted["abc"]
     assert "Z2|" in deleted["abc"]
 
     lyric = _edit(DISPLAY, op="lyric", index=0, text="山")
@@ -358,7 +358,7 @@ def test_one_rest_glyph_and_accompaniment_note():
     lyric = _edit(LYRIC_REST, op="degree", index=1, slice=1, degree=3)
     assert lyric["error"] is None
     assert "C4z4E4z4z4D4|" in lyric["abc"]
-    assert "w: 春 * * * * 晓" in lyric["abc"]
+    assert "w: 春 * 晓" in lyric["abc"]
 
     ins = _edit(LONG_REST, op="degree", index=0, voice="Ins", slice=0, degree=2)
     assert ins["error"] is None
