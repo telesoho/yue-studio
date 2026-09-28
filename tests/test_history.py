@@ -11,6 +11,7 @@ from yue_studio.history import (
     format_duration,
     format_stamp,
     history_table,
+    job_audio,
     load_entry,
     list_history,
     style_snippet,
@@ -120,6 +121,7 @@ def test_load_entry_reads_request_and_plan_fallback(tmp_path: Path):
 
     transcribe = _transcribe_dir(tmp_path, "20260920-215000")
     from_tr = load_entry(transcribe, root=tmp_path)
+    assert from_tr.audio is None
     assert from_tr.request == {}
     assert from_tr.lyrics == ""
     assert from_tr.display_abc == ""
@@ -152,6 +154,23 @@ def test_delete_entry_only_under_root(tmp_path: Path):
     stray.mkdir()
     with pytest.raises(ValueError, match="不是工作室任务目录"):
         delete_entry(stray, root=tmp_path)
+
+
+def test_history_plays_saved_source_audio(tmp_path: Path):
+    transcribe = _transcribe_dir(tmp_path, "20260920-215000")
+    source = transcribe / "source.mp3"
+    source.write_bytes(b"ID3song")
+    (transcribe / "separated").mkdir()
+    (transcribe / "separated" / "source.wav").write_bytes(b"vocals")
+
+    entries = list_history(tmp_path)
+    assert entries[0].audio == source.resolve()
+    loaded = load_entry(transcribe, root=tmp_path)
+    assert loaded.audio == source.resolve()
+
+    song = _song_dir(tmp_path, "20260920-233150")
+    (song / "source.mp3").write_bytes(b"ID3")
+    assert job_audio(song) == song / "audio.flac"
 
 
 def test_format_helpers():

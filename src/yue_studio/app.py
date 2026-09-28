@@ -507,11 +507,11 @@ def transcribe_score_song(audio, language,
                 audio_path, language=language or "zh", on_status=on_status)):
         if phase == "running":
             yield (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
-                   progress_html, log_text, gr.skip(), gr.skip())
+                   progress_html, log_text, gr.skip(), gr.skip(), gr.skip())
             continue
         if phase == "failed":
             yield (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
-                   progress_html, log_text, gr.skip(), gr.skip())
+                   progress_html, log_text, gr.skip(), gr.skip(), gr.skip())
             return
         result = payload
         score_html, abc, chords, score_status = _score_outputs(
@@ -520,9 +520,13 @@ def transcribe_score_song(audio, language,
         note = score_status
         if warnings:
             note = "识谱警告:\n" + "\n".join(map(str, warnings)) + "\n" + note
+        source = result.get("source")
+        if source:
+            note = f"源音频: {source}\n" + note
         yield (
             result["directory"], score_html, abc, chords, result.get("lyrics") or "",
             progress_html, log_text + "\n" + note, abc, result.get("display_abc") or "",
+            source,
         )
 
 
@@ -532,7 +536,7 @@ def on_score_abc_edit(abc, clean, display):
     return html, chords
 
 
-def apply_score_edit(edited, previous, _clean, job):
+def apply_score_edit(edited, previous, _clean, job, _audio=None):
     if edited == "__YUE_EDITOR_MISSING__":
         raise gr.Error("简谱编辑窗口没有载入")
     if (edited or "") == (previous or ""):
@@ -550,7 +554,7 @@ def apply_score_edit(edited, previous, _clean, job):
     )
 
 
-def apply_history_edit(edited, previous, _clean, job):
+def apply_history_edit(edited, previous, _clean, job, _audio=None):
     if edited == "__YUE_EDITOR_MISSING__":
         raise gr.Error("简谱编辑窗口没有载入")
     if (edited or "") == (previous or ""):
@@ -969,7 +973,7 @@ def build_app():
                     transcribe_score_song,
                     [score_audio, score_language, *hw_inputs],
                     [score_job, score_view, score_abc, score_chords, score_lyrics,
-                     score_progress, score_status, score_clean, score_display],
+                     score_progress, score_status, score_clean, score_display, score_audio],
                     show_progress="minimal",
                 )
                 score_abc.blur(
@@ -979,7 +983,7 @@ def build_app():
                 )
                 score_edit_btn.click(
                     apply_score_edit,
-                    [score_display, score_display, score_clean, score_job],
+                    [score_display, score_display, score_clean, score_job, score_audio],
                     [score_view, score_abc, score_chords, score_lyrics,
                      score_clean, score_display],
                     js=OPEN_EDITOR_JS,
@@ -1029,7 +1033,7 @@ def build_app():
                 )
                 hist_edit_btn.click(
                     apply_history_edit,
-                    [hist_display, hist_display, hist_clean, hist_selected],
+                    [hist_display, hist_display, hist_clean, hist_selected, hist_audio],
                     [hist_score, hist_chords, hist_lyrics, hist_clean, hist_display],
                     js=OPEN_EDITOR_JS,
                 )

@@ -1,6 +1,9 @@
 """One GPU job at a time. YuE2 pipeline is not shared across threads."""
 from __future__ import annotations
 
+import re
+import shutil
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -334,16 +337,22 @@ class StudioRunner:
             sheetsage = _ensure_resource("SheetSage2", on_status=on_status)
             mert = _ensure_resource("MERT-v2-FullSong", on_status=on_status)
             directory = new_job_dir(outputs_dir(), "transcribe", identifier)
-            device = "cpu" if self._pipeline_kwargs.get("device") == "cpu" else "cuda"
-            dtype = "bf16" if device == "cuda" else "fp32"
-            score = run_transcribe(
-                Path(audio), directory, task="full", model=sheetsage.path,
-                base_model=mert.path, device=device, dtype=dtype, on_status=on_status,
-            )
+            source = save_source_audio(Path(audio), directory)
+            parked = move_source_aside(source)
+            try:
+                device = "cpu" if self._pipeline_kwargs.get("device") == "cpu" else "cuda"
+                dtype = "bf16" if device == "cuda" else "fp32"
+                score = run_transcribe(
+                    parked, directory, task="full", model=sheetsage.path,
+                    base_model=mert.path, device=device, dtype=dtype, on_status=on_status,
+                )
+                source = restore_source_audio(parked, directory)
+            finally:
+                _discard_parked_source(parked)
             abc = score.read_text(encoding="utf-8")
             warnings = _transcription_warnings(directory)
             words, lyric_error = _recognize_score_lyrics(
-                Path(audio), directory, language=language, device=device,
+                source, directory, language=language, device=device,
                 warnings=warnings, on_status=on_status,
             )
             alignment = align_lyrics(abc, words)
@@ -359,7 +368,68 @@ class StudioRunner:
                 "warnings": warnings,
                 "lyric_error": lyric_error,
                 "score": str(score),
+                "source": str(source),
             }
+
+
+_SOURCE_SUFFIX = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
+
+
+def _source_suffix(audio: Path) -> str:
+    suffix = audio.suffix.lower()
+    if _SOURCE_SUFFIX.fullmatch(suffix):
+        return suffix
+    try:
+        head = audio.read_bytes()[:12]
+    except OSError:
+        head = b""
+    if len(head) >= 12 and head.startswith(b"RIFF") and head[8:12] == b"WAVE":
+        return ".wav"
+    if head.startswith(b"fLaC"):
+        return ".flac"
+    if head.startswith(b"ID3") or (len(head) >= 2 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0):
+        return ".mp3"
+    if head.startswith(b"OggS"):
+        return ".ogg"
+    return ".audio"
+
+
+def save_source_audio(audio: Path, directory: Path) -> Path:
+    """Copy the uploaded mix into the job directory without re-encoding."""
+    audio = Path(audio)
+    dest = Path(directory) / f"source{_source_suffix(audio)}"
+    if dest.resolve() == audio.resolve():
+        return dest
+    shutil.copyfile(audio, dest)
+    return dest
+
+
+def move_source_aside(source: Path) -> Path:
+    """Move the mix out of the job directory so transcribe.py can mkdir it."""
+    source = Path(source)
+    parent = Path(tempfile.mkdtemp(prefix="yue-source-"))
+    dest = parent / source.name
+    shutil.move(source, dest)
+    return dest
+
+
+def restore_source_audio(parked: Path, directory: Path) -> Path:
+    parked = Path(parked)
+    dest = Path(directory) / parked.name
+    shutil.move(parked, dest)
+    return dest
+
+
+def _discard_parked_source(parked: Path) -> None:
+    parked = Path(parked)
+    if parked.is_file():
+        parked.unlink()
+    parent = parked.parent
+    if parent.name.startswith("yue-source-"):
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
 
 
 def _transcription_warnings(directory: Path) -> list:

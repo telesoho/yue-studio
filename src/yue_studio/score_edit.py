@@ -15,22 +15,26 @@ from .score import load_abc_tools
 
 _W_LINE = re.compile(r"^\s*w:", re.IGNORECASE)
 
+# Gradio replaces the Python arguments with this function's return value, so the
+# audio FileData is passed through and ignored by the edit handlers.
 OPEN_EDITOR_JS = r"""
-async (display, previous, clean, job) => {
+async (display, previous, clean, job, audio) => {
   const source = (display && String(display).trim()) ? String(display) : String(clean || "");
-  if (!source.trim()) return ["", "", clean, job];
+  if (!source.trim()) return ["", "", clean, job, audio];
   if (!window.yueScoreEditor || !window.yueScoreEditor.open) {
-    return ["__YUE_EDITOR_MISSING__", display, clean, job];
+    return ["__YUE_EDITOR_MISSING__", display, clean, job, audio];
   }
-  const edited = await window.yueScoreEditor.open(source);
-  if (edited == null || edited === source) return [source, source, clean, job];
-  return [edited, source, clean, job];
+  const edited = await window.yueScoreEditor.open(source, audio);
+  if (edited == null || edited === source) return [source, source, clean, job, audio];
+  return [edited, source, clean, job, audio];
 }
 """
 
+# Gradio copies `head` into the page by creating script elements and appending
+# them. Those scripts run as they arrive, so the smaller jianpu module can
+# execute before abc2svg exists and never register. score_edit.js loads the
+# two files itself, abc2svg first.
 EDITOR_HEAD = """
-<script src="/gradio_api/file=static/abc2svg/abc2svg-1.js"></script>
-<script src="/gradio_api/file=static/abc2svg/jianpu-1.js"></script>
 <script src="/gradio_api/file=static/score_edit.js"></script>
 """
 

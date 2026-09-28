@@ -10,6 +10,10 @@ from pathlib import Path
 from .paths import outputs_dir
 
 JOB_DIR = re.compile(r"^(song|plan|transcribe)-(\d{8}-\d{6})-(.+)$")
+SOURCE_AUDIO = re.compile(
+    r"^source\.(?:wav|mp3|flac|ogg|m4a|aac|opus|webm|aiff|aif|wma|audio)$",
+    re.IGNORECASE,
+)
 KIND_LABELS = {"song": "生成", "plan": "规划", "transcribe": "转谱"}
 TABLE_HEADERS = ["时间", "类型", "标识", "时长", "风格"]
 EMPTY_NOTE = "还没有可播放或可查看的记录。在「生成」「识谱」或「翻唱」页完成后会出现在这里。"
@@ -95,16 +99,28 @@ def job_dir_under(root: Path, directory: Path) -> Path:
     return path
 
 
+def job_audio(directory: Path) -> Path | None:
+    """Synthesized ``audio.flac``, or the original mix saved by 识谱."""
+    audio = directory / "audio.flac"
+    if audio.is_file():
+        return audio
+    matches = sorted(
+        path for path in directory.iterdir()
+        if path.is_file() and SOURCE_AUDIO.fullmatch(path.name)
+    )
+    return matches[0] if matches else None
+
+
 def _list_entry(directory: Path) -> HistoryEntry | None:
     parsed = parse_job_name(directory.name)
     if parsed is None or not directory.is_dir():
         return None
     kind, stamp, identifier = parsed
-    audio = directory / "audio.flac"
+    audio = job_audio(directory)
     score = directory / "score.abc"
     manifest = directory / "plan_manifest.json"
     if kind == "song":
-        if not audio.is_file():
+        if audio is None or not audio.is_file():
             return None
     elif not score.is_file() and not manifest.is_file():
         return None
@@ -120,7 +136,7 @@ def _list_entry(directory: Path) -> HistoryEntry | None:
         kind=kind,
         stamp=stamp,
         identifier=identifier,
-        audio=audio.resolve() if audio.is_file() else None,
+        audio=audio.resolve() if audio is not None and audio.is_file() else None,
         request=request,
         audio_seconds=audio_seconds,
         has_plan=manifest.is_file(),

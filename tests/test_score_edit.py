@@ -246,7 +246,17 @@ def test_jianpu_edit_script_renders_heads():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_editor_head_loads_score_script_only():
+    from yue_studio.score_edit import EDITOR_HEAD
+
+    assert "score_edit.js" in EDITOR_HEAD
+    assert "abc2svg-1.js" not in EDITOR_HEAD
+    assert "jianpu-1.js" not in EDITOR_HEAD
+
+
 def test_editor_button_reads_abc_from_the_browser():
+    import inspect
+
     from yue_studio.app import build_app
 
     demo = build_app()
@@ -258,6 +268,13 @@ def test_editor_button_reads_abc_from_the_browser():
     for fn in editor_fns:
         for block in fn.inputs[:3]:
             assert block.stateful is False
+        assert len(fn.inputs) == 5
+        assert type(fn.inputs[4]).__name__ == "Audio"
+        params = list(inspect.signature(fn.fn).parameters)
+        assert params[:4] == ["edited", "previous", "_clean", "job"]
+        assert params[4] == "_audio"
+        assert "open(source, audio)" in fn.js
+        assert fn.js.count("job, audio]") == 4
 
 
 def test_apply_score_edit_skips_when_unchanged_and_requires_a_score():

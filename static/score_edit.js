@@ -945,6 +945,32 @@
     return best || marks[0];
   }
 
+  function markTime(marks, voice, index, slice) {
+    if (!marks || !marks.length || index == null) return null;
+    const wantVoice = voice || "Vocal";
+    const wantSlice = slice || 0;
+    for (const mark of marks) {
+      if (mark.voice === wantVoice && mark.index === index && mark.slice === wantSlice) {
+        return mark.start;
+      }
+    }
+    return null;
+  }
+
+  // Gradio 5 hands the browser a FileData object. A raw filesystem path cannot
+  // be played, so only an http(s), blob, or app-relative URL is accepted.
+  function fileUrl(file) {
+    if (!file) return "";
+    if (typeof file === "string") {
+      return /^(https?:|blob:|\/)/.test(file) ? file : "";
+    }
+    if (typeof file.url === "string" && file.url) return file.url;
+    if (typeof file.path === "string" && file.path) {
+      return "/gradio_api/file=" + encodeURI(file.path.replace(/\\/g, "/"));
+    }
+    return "";
+  }
+
   function inspectScore(abc) {
     const parsed = collect(abc);
     if (parsed.error) return { error: parsed.error, events: [], bpm: 120, keyName: "C" };
@@ -970,6 +996,11 @@
     lyricInput: null,
     playhead: null,
     playKey: "",
+    audioUrl: "",
+    audio: null,
+    transport: "midi",
+    marks: [],
+    sourceTouched: false,
   };
 
   function ensureDom() {
@@ -986,6 +1017,8 @@
       ".yue-jp-bar h2{margin:0 8px 0 0;font-size:16px;font-weight:650;}",
       ".yue-jp-bar button{font:inherit;cursor:pointer;border:0;border-radius:8px;}",
       ".yue-jp-bar button{background:#3a2e22;color:#f6e9c8;padding:6px 10px;}",
+      ".yue-jp-bar button.on{box-shadow:inset 0 0 0 2px #e85a25;}",
+      ".yue-jp-bar button[hidden]{display:none;}",
       ".yue-jp-bar button.primary{background:#e85a25;color:#fff;}",
       ".yue-jp-meta{opacity:.8;font-size:13px;margin-right:auto;}",
       ".yue-jp-tools{display:flex;flex-wrap:wrap;gap:8px 0;align-items:center;",
@@ -1019,6 +1052,8 @@
       '<div class="yue-jp-bar">',
       "<h2>编辑简谱</h2>",
       '<span class="yue-jp-meta"></span>',
+      '<button type="button" data-act="mode" data-mode="midi" hidden>MIDI</button>',
+      '<button type="button" data-act="mode" data-mode="source" hidden>原声</button>',
       '<button type="button" data-act="play">播放</button>',
       '<button type="button" data-act="stop">停止</button>',
       '<span class="yue-jp-clock">0:00</span>',
@@ -1052,7 +1087,8 @@
     ui.card.addEventListener("click", (ev) => {
       const button = ev.target.closest && ev.target.closest("button");
       const act = button && button.getAttribute("data-act");
-      if (act === "play") togglePlay();
+      if (act === "mode") setTransport(button.getAttribute("data-mode"));
+      else if (act === "play") togglePlay();
       else if (act === "stop") stopPlayback();
       else if (act === "ok") {
         commitOpenLyric();
@@ -1071,6 +1107,7 @@
       const picked = pickedHead(ev.target);
       if (!picked) return;
       selectNote(picked.voice, picked.index, picked.slice);
+      if (ui.transport === "source") seekSource(picked);
     });
     ui.paper.addEventListener("dblclick", (ev) => {
       const picked = pickedHead(ev.target);
@@ -1370,8 +1407,47 @@
     }
   }
 
+  const ABC2SVG_SRC = "/gradio_api/file=static/abc2svg/abc2svg-1.js";
+  const JIANPU_SRC = "/gradio_api/file=static/abc2svg/jianpu-1.js";
+
+  function jianpuReady() {
+    return typeof abc2svg !== "undefined" && !!abc2svg.Abc && !!abc2svg.jianpu;
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const el = document.createElement("script");
+      el.src = src;
+      el.onload = () => resolve();
+      el.onerror = () => reject(new Error(src));
+      document.head.appendChild(el);
+    });
+  }
+
+  let jianpuLoading = null;
+  function ensureJianpu() {
+    if (jianpuReady()) return Promise.resolve(true);
+    if (jianpuLoading) return jianpuLoading;
+    jianpuLoading = (async () => {
+      if (typeof abc2svg === "undefined" || !abc2svg.Abc) {
+        await loadScript(ABC2SVG_SRC);
+      }
+      if (typeof abc2svg === "undefined" || !abc2svg.jianpu) {
+        await loadScript(JIANPU_SRC);
+      }
+      return jianpuReady();
+    })().catch((err) => {
+      jianpuLoading = null;
+      throw err;
+    });
+    return jianpuLoading;
+  }
+
   function renderScore() {
     if (ui.lyricInput) ui.lyricInput = null;
+    ui.marks = playMarks(ui.abc);
+    ui.playhead = null;
+    ui.playKey = "";
     const info = inspectScore(ui.abc);
     ui.meta.textContent = info.error ? "" : "1=" + info.keyName + "  ·  ♩=" + info.bpm;
     if (typeof abc2svg === "undefined" || !abc2svg.Abc || !abc2svg.jianpu) {
@@ -1405,6 +1481,9 @@
       }
     }
     markSelection();
+    if (ui.transport === "source" && ui.audio && ui.audioUrl && (ui.sourceTouched || !ui.audio.paused)) {
+      paintPlayhead(ui.audio.currentTime || 0);
+    }
   }
 
   function stampVoice(voice) {
@@ -1662,6 +1741,189 @@
     ui.osc.push(osc);
   }
 
+  function playbackTransport(hasSource, mode) {
+    return hasSource && mode === "source" ? "source" : "midi";
+  }
+
+  // The red cursor tracks the score clock. Source audio is the original
+  // recording, so that line stays off while it plays.
+  function showsPlayhead(transport) {
+    return transport !== "source";
+  }
+
+  function playHint() {
+    if (ui.audioUrl) {
+      return "点唱谱或伴奏上的一个音来改，会响起这个音。可播放 MIDI 或源音频；听源音频时点简谱可跳转。双击歌词改这个字。";
+    }
+    return "点唱谱或伴奏上的一个音来改，会响起这个音。双击歌词改这个字。";
+  }
+
+  function syncTransport() {
+    if (!ui.audioUrl) ui.transport = "midi";
+    if (!ui.root) return;
+    const show = !!ui.audioUrl;
+    ui.root.querySelectorAll("[data-act='mode']").forEach((button) => {
+      const mode = button.getAttribute("data-mode");
+      const on = show && mode === ui.transport;
+      button.hidden = !show;
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+
+  function setTransport(mode) {
+    const next = playbackTransport(!!ui.audioUrl, mode);
+    if (next === ui.transport) return;
+    stopPlayback();
+    ui.transport = next;
+    syncTransport();
+    setStatus(playHint());
+  }
+
+  function setPlayLabel(text) {
+    if (!ui.root) return;
+    const button = ui.root.querySelector("[data-act='play']");
+    if (button) button.textContent = text;
+  }
+
+  function setPlayClock(now, total) {
+    if (!ui.clock) return;
+    const shown = Math.max(0, now || 0);
+    if (total > 0) ui.clock.textContent = formatClock(shown) + " / " + formatClock(total);
+    else ui.clock.textContent = formatClock(shown);
+  }
+
+  function paintPlayhead(now) {
+    if (!showsPlayhead(ui.transport)) {
+      clearPlayhead();
+      return;
+    }
+    const marks = ui.marks && ui.marks.length ? ui.marks : playMarks(ui.abc);
+    ui.marks = marks;
+    const mark = cursorAt(marks, Math.max(0, now || 0));
+    if (!mark) {
+      clearPlayhead();
+      return;
+    }
+    const playKey = mark.voice + ":" + mark.index + ":" + mark.slice;
+    const node = headFor(mark);
+    if (!node) return;
+    if (playKey !== ui.playKey || !ui.playhead) {
+      ui.playKey = playKey;
+      drawPlayhead(node);
+      followPlayhead(node);
+    }
+  }
+
+  function abandonSource(message) {
+    ui.generation += 1;
+    if (ui.raf) cancelAnimationFrame(ui.raf);
+    ui.raf = 0;
+    if (ui.audio) ui.audio.pause();
+    ui.audio = null;
+    ui.audioUrl = "";
+    ui.sourceTouched = false;
+    ui.transport = "midi";
+    syncTransport();
+    setPlayLabel("播放");
+    setStatus(message);
+  }
+
+  function ensureAudio() {
+    if (!ui.audioUrl || typeof Audio === "undefined") return null;
+    if (ui.audio) return ui.audio;
+    let audio;
+    try {
+      audio = new Audio(ui.audioUrl);
+    } catch (err) {
+      abandonSource("源音频打不开，改为试听简谱。");
+      return null;
+    }
+    audio.preload = "auto";
+    audio.addEventListener("error", () => {
+      if (ui.audio !== audio || !ui.audioUrl) return;
+      abandonSource("源音频打不开，改为试听简谱。");
+    });
+    audio.addEventListener("ended", () => {
+      if (ui.audio !== audio) return;
+      ui.generation += 1;
+      if (ui.raf) cancelAnimationFrame(ui.raf);
+      ui.raf = 0;
+      setPlayLabel("播放");
+      paintPlayhead(audio.currentTime || 0);
+    });
+    ui.audio = audio;
+    return audio;
+  }
+
+  function attachSource(audioFile) {
+    const next = fileUrl(audioFile);
+    if (next !== ui.audioUrl) {
+      if (ui.audio) ui.audio.pause();
+      ui.audio = null;
+      ui.audioUrl = next;
+    }
+    if (ui.audioUrl) ensureAudio();
+  }
+
+  function seekSource(picked) {
+    if (!ui.audioUrl) return;
+    const audio = ui.audio || ensureAudio();
+    if (!audio || !picked) return;
+    const marks = ui.marks && ui.marks.length ? ui.marks : playMarks(ui.abc);
+    ui.marks = marks;
+    const time = markTime(marks, picked.voice, picked.index, picked.slice);
+    if (time == null) return;
+    const apply = () => {
+      if (ui.audio !== audio) return;
+      try { audio.currentTime = time; } catch (err) { return; }
+      ui.sourceTouched = true;
+      paintPlayhead(time);
+      const total = Number.isFinite(audio.duration) ? audio.duration : 0;
+      setPlayClock(time, total);
+    };
+    if (audio.readyState >= 1) apply();
+    else audio.addEventListener("loadedmetadata", apply, { once: true });
+  }
+
+  function tickSource(audio, generation) {
+    if (ui.generation !== generation || ui.audio !== audio) return;
+    const now = audio.currentTime || 0;
+    const total = Number.isFinite(audio.duration) ? audio.duration : 0;
+    setPlayClock(now, total);
+    paintPlayhead(now);
+    if (!audio.paused && !audio.ended) ui.raf = requestAnimationFrame(() => tickSource(audio, generation));
+  }
+
+  function toggleSource() {
+    const audio = ensureAudio();
+    if (!audio) return;
+    if (!audio.paused && !audio.ended) {
+      audio.pause();
+      ui.generation += 1;
+      if (ui.raf) cancelAnimationFrame(ui.raf);
+      ui.raf = 0;
+      ui.sourceTouched = true;
+      setPlayLabel("播放");
+      paintPlayhead(audio.currentTime || 0);
+      return;
+    }
+    if (audio.ended || (Number.isFinite(audio.duration) && audio.currentTime >= audio.duration - 0.02)) {
+      try { audio.currentTime = 0; } catch (err) { /* metadata not ready yet */ }
+    }
+    const generation = ++ui.generation;
+    ui.sourceTouched = true;
+    const started = audio.play();
+    if (started && typeof started.catch === "function") {
+      started.catch(() => {
+        if (ui.generation !== generation) return;
+        abandonSource("源音频打不开，改为试听简谱。");
+      });
+    }
+    setPlayLabel("暂停");
+    tickSource(audio, generation);
+  }
+
   function stopPlayback() {
     ui.generation += 1;
     if (ui.raf) cancelAnimationFrame(ui.raf);
@@ -1670,11 +1932,22 @@
       try { osc.stop(); } catch (err) { /* already stopped */ }
     }
     ui.osc = [];
+    if (ui.audio) {
+      ui.audio.pause();
+      try { ui.audio.currentTime = 0; } catch (err) { /* not seekable yet */ }
+    }
+    ui.sourceTouched = false;
     heads().forEach((el) => el.classList.remove("yue-play"));
     clearPlayhead();
+    setPlayLabel("播放");
+    if (ui.clock) ui.clock.textContent = "0:00";
   }
 
   function togglePlay() {
+    if (ui.transport === "source" && ui.audioUrl) {
+      toggleSource();
+      return;
+    }
     if (ui.raf) {
       stopPlayback();
       return;
@@ -1737,6 +2010,7 @@
       if (now < total) ui.raf = requestAnimationFrame(tick);
       else stopPlayback();
     };
+    setPlayLabel("暂停");
     tick();
   }
 
@@ -1760,9 +2034,12 @@
     if (resolve) resolve(value);
   }
 
-  function open(abc) {
+  function open(abc, audioFile) {
     ensureDom();
     stopPlayback();
+    attachSource(audioFile);
+    ui.transport = playbackTransport(!!ui.audioUrl, "source");
+    syncTransport();
     if (ui.resolve) ui.resolve(null);
     return new Promise((resolve) => {
       ui.abc = String(abc || "");
@@ -1770,10 +2047,20 @@
       ui.voice = "Vocal";
       ui.slice = 0;
       ui.resolve = resolve;
-      setStatus("点唱谱或伴奏上的一个音来改，会响起这个音。双击歌词改这个字。");
+      setStatus(playHint());
       if (ui.clock) ui.clock.textContent = "0:00";
       ui.root.hidden = false;
-      renderScore();
+      ensureJianpu().then((ok) => {
+        if (ui.resolve !== resolve) return;
+        if (!ok) {
+          ui.paper.innerHTML = "<p>简谱模块没有载入。</p>";
+          return;
+        }
+        renderScore();
+      }).catch(() => {
+        if (ui.resolve !== resolve) return;
+        ui.paper.innerHTML = "<p>简谱模块没有载入。</p>";
+      });
       ui.card.focus();
     });
   }
@@ -1785,10 +2072,15 @@
     timeline: timeline,
     playMarks: playMarks,
     cursorAt: cursorAt,
+    markTime: markTime,
+    fileUrl: fileUrl,
+    playbackTransport: playbackTransport,
+    showsPlayhead: showsPlayhead,
     inspectScore: inspectScore,
     previewAbc: previewAbc,
     noteMidi: noteMidi,
     jianpuAbcWithDirective: jianpuAbcWithDirective,
+    ensureJianpu: ensureJianpu,
     countHeads: countHeads,
     headIndexes: headIndexes,
     lyricIsDrawn: lyricIsDrawn,

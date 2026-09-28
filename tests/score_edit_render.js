@@ -116,6 +116,35 @@ red += check(
     atBar && atBar.voice === "Vocal" && atBar.index === 4,
   atBeat ? atBeat.voice + ":" + atBeat.index : "missing"
 );
+const vocalBeat = marks.find((mark) => mark.voice === "Vocal" && mark.index === 1 && mark.slice === 0);
+red += check(
+  "markTime is the clicked glyph's start",
+  vocalBeat && editor.markTime(marks, "Vocal", 1, 0) === vocalBeat.start &&
+    editor.markTime(marks, "Ins", 1, 0) !== vocalBeat.start &&
+    editor.markTime(marks, "Vocal", 99, 0) == null,
+  vocalBeat ? String(vocalBeat.start) : "missing"
+);
+red += check(
+  "playback uses source audio only when it is available",
+  editor.playbackTransport(true, "source") === "source" &&
+    editor.playbackTransport(true, "midi") === "midi" &&
+    editor.playbackTransport(false, "source") === "midi",
+  ""
+);
+red += check(
+  "source playback hides the red playhead",
+  editor.showsPlayhead("source") === false && editor.showsPlayhead("midi") === true,
+  ""
+);
+red += check(
+  "fileUrl keeps a playable address",
+  editor.fileUrl({ url: "/gradio_api/file=song.wav", path: "C:/other.wav" }) === "/gradio_api/file=song.wav" &&
+    editor.fileUrl({ path: "C:\\song.wav" }) === "/gradio_api/file=C:/song.wav" &&
+    editor.fileUrl("/gradio_api/file=song.wav") === "/gradio_api/file=song.wav" &&
+    editor.fileUrl(null) === "" &&
+    editor.fileUrl("C:\\song.wav") === "",
+  editor.fileUrl({ path: "C:\\song.wav" })
+);
 
 const keys = editor.commandOfKey("5");
 red += check("key 5", keys && keys.op === "degree" && keys.degree === 5, "");
@@ -277,4 +306,37 @@ red += check(
   heldEvents.map((ev) => ev.lyric).join(" ")
 );
 
-process.exit(red ? 1 : 0);
+function checkLoadOrder() {
+  const pending = [];
+  global.document = {
+    createElement() {
+      return { onload: null, onerror: null, src: "" };
+    },
+    head: {
+      appendChild(el) { pending.push(el); },
+    },
+  };
+  const done = editor.ensureJianpu();
+  return new Promise((resolve) => setImmediate(resolve)).then(() => {
+    const firstOnly = pending.length === 1 && pending[0].src.endsWith("abc2svg-1.js");
+    global.abc2svg = { Abc: function Abc() {} };
+    pending[0].onload();
+    return new Promise((resolve) => setImmediate(resolve)).then(() => {
+      const secondAfter = pending.length === 2 && pending[1].src.endsWith("jianpu-1.js");
+      global.abc2svg.jianpu = {};
+      pending[1].onload();
+      return done.then((ok) => check(
+        "jianpu module loads after abc2svg",
+        firstOnly && secondAfter && ok === true,
+        pending.map((el) => el.src).join(" | ")
+      ));
+    });
+  });
+}
+
+checkLoadOrder().then((failed) => {
+  process.exit(red + failed ? 1 : 0);
+}).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

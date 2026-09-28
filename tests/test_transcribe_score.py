@@ -39,7 +39,12 @@ def _patch(monkeypatch, tmp_path: Path, separate, recognize):
     captured = {}
 
     def fake_run_transcribe(path, directory, **kwargs):
+        from yue_studio.sheetsage import _clear_empty_output
+
         captured.update(kwargs)
+        captured["audio"] = Path(path)
+        directory = _clear_empty_output(Path(directory))
+        directory.mkdir()
         score = directory / "score.abc"
         score.write_text(ABC, encoding="utf-8")
         return score
@@ -55,6 +60,24 @@ def _patch(monkeypatch, tmp_path: Path, separate, recognize):
     monkeypatch.setattr("yue_studio.runner.separate_vocals", separate)
     monkeypatch.setattr("yue_studio.runner.recognize_lyrics", recognize)
     return audio, captured
+
+
+def test_save_source_audio_keeps_original_bytes(tmp_path: Path):
+    from yue_studio.runner import save_source_audio
+
+    src = tmp_path / "mix.MP3"
+    src.write_bytes(b"ID3" + b"\x00" * 20)
+    job = tmp_path / "job"
+    job.mkdir()
+    saved = save_source_audio(src, job)
+    assert saved.name == "source.mp3"
+    assert saved.read_bytes() == src.read_bytes()
+
+    bare = tmp_path / "upload"
+    bare.write_bytes(b"fLaC" + b"\x00" * 8)
+    sniffed = save_source_audio(bare, job)
+    assert sniffed.name == "source.flac"
+    assert sniffed.read_bytes() == bare.read_bytes()
 
 
 def test_transcribe_score_writes_aligned_lyrics(tmp_path: Path, monkeypatch):
@@ -79,9 +102,14 @@ def test_transcribe_score_writes_aligned_lyrics(tmp_path: Path, monkeypatch):
     score = Path(result["score"])
     assert captured["task"] == "full"
     assert captured["device"] == "cpu"
-    assert seen["separate_audio"] == audio
+    assert captured["audio"].name == "source.wav"
+    assert Path(result["directory"]) not in captured["audio"].parents
     assert seen["recognize_audio"] == vocals
     assert seen["language"] == "zh"
+    saved = Path(result["source"])
+    assert saved.name == "source.wav"
+    assert saved.read_bytes() == audio.read_bytes()
+    assert seen["separate_audio"] == saved
     assert "w:" not in score.read_text(encoding="utf-8")
     assert "w:" not in result["abc"]
     assert "w: 春 眠 不 觉 晓 处 处 闻" in result["display_abc"]
@@ -104,7 +132,8 @@ def test_transcribe_score_uses_mix_when_separation_fails(tmp_path: Path, monkeyp
 
     audio, _captured = _patch(monkeypatch, tmp_path, separate, recognize)
     result = StudioRunner().transcribe_score(audio)
-    assert seen["audio"] == audio
+    assert seen["audio"] == Path(result["source"])
+    assert Path(result["source"]).read_bytes() == audio.read_bytes()
     assert any("原混音" in str(item) for item in result["warnings"])
     assert result["lyric_error"] is None
     assert "春" in result["lyrics"]
