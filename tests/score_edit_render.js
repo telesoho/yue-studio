@@ -100,10 +100,39 @@ red += check(
 );
 
 const play = editor.timeline(DISPLAY);
+const melody = play.notes.filter((note) => note.voice !== "Chord");
+const chord = play.notes.filter((note) => note.voice === "Chord");
 red += check(
   "midi timeline",
-  play.notes.length === 8 && play.notes[0].midi === 60 && Math.abs(play.notes[0].duration - 0.5) < 1e-6,
+  melody.length === 8 && melody[0].midi === 60 && Math.abs(melody[0].duration - 0.5) < 1e-6,
   play.error || ""
+);
+red += check(
+  "midi timeline plays the chord with the melody",
+  chord.length === 4 &&
+    chord.map((note) => note.midi).join(",") === "48,60,64,67" &&
+    chord.every((note) => note.start === 0 && Math.abs(note.duration - 4) < 1e-6),
+  chord.map((note) => note.midi + "@" + note.start + "+" + note.duration).join(" ")
+);
+const chordChange = [
+  "X:1", "T:", "M:4/4", "L:1/4", "Q:1/4=60", "K:C", "V: Vocal",
+  '"C"C2 "G7"E2|', "V: Ins", "Z|", "",
+].join("\n");
+const changedPlay = editor.timeline(chordChange);
+const changedChords = changedPlay.notes.filter((note) => note.voice === "Chord");
+red += check(
+  "a later chord replaces the one before it",
+    changedChords.filter((note) => note.start === 0).map((note) => note.midi).join(",") === "48,60,64,67" &&
+    changedChords.filter((note) => note.start === 0).every((note) => note.duration === 2) &&
+    changedChords.filter((note) => note.start === 2).map((note) => note.midi).join(",") === "55,62,65,67,71",
+  changedChords.map((note) => note.midi + "@" + note.start).join(" ")
+);
+red += check(
+  "chord spelling",
+  (editor.spellChord("Am") || []).join(",") === "57,60,64,69" &&
+    (editor.spellChord("C/E") || []).join(",") === "52,60,64,67" &&
+    editor.spellChord("nope") == null,
+  String(editor.spellChord("C/E"))
 );
 const marks = editor.playMarks(DISPLAY);
 const atBeat = editor.cursorAt(marks, 0.75);
@@ -304,6 +333,25 @@ red += check(
   heldEvents.map((ev) => ev.lyric).join(" ") === "春 - 晓" &&
     heldEvents.map((ev) => editor.lyricIsDrawn(ev.lyric)).join(",") === "true,false,true",
   heldEvents.map((ev) => ev.lyric).join(" ")
+);
+
+const queued = editor.soundingNotes([
+  { start: 0, duration: 1, midi: 60 },
+  { start: 1, duration: 1, midi: 62 },
+  { start: 2, duration: 0.5, midi: 64 },
+], 1.25);
+red += check(
+  "midi resume keeps the remainder and later notes",
+  queued.length === 2 &&
+    queued[0].delay === 0 && Math.abs(queued[0].duration - 0.75) < 1e-9 && queued[0].note.midi === 62 &&
+    Math.abs(queued[1].delay - 0.75) < 1e-9 && queued[1].duration === 0.5 && queued[1].note.midi === 64,
+  JSON.stringify(queued)
+);
+const finished = editor.soundingNotes([{ start: 0, duration: 1, midi: 60 }], 1);
+red += check(
+  "midi resume skips notes that already ended",
+  finished.length === 0,
+  JSON.stringify(finished)
 );
 
 function checkLoadOrder() {

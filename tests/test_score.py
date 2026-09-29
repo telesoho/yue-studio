@@ -52,8 +52,18 @@ def test_score_html_embeds_playback():
     html = score_html("X:1\nT:t\nK:C\nC")
     assert 'allow="autoplay"' in html
     assert "播放" in html
-    assert "试听曲谱" in html
+    assert "停止" in html
+    assert "viewBox" in html
+    assert "钢琴试听" in html
+    assert "yuePiano = api" in html
+    assert "ctx.destination" in html
+    assert "yuePiano.schedule" in html
+    assert "yuePiano.prepare" in html
+    assert "__YUE_SMPLR_SOURCE__" in html
+    assert "SplendidGrandPiano" in html
     assert "setUpAudio" in html
+    assert "yueScoreEditor.timeline" in html
+    assert "voice !==" in html
     assert "AudioContext" in html
     assert "TimingCallbacks" in html
 
@@ -95,6 +105,24 @@ def test_jianpu_module_is_vendored():
     assert "short_nm" in text and "唱" in text and "伴" in text, (
         "YuE Vocal/Ins labels should collapse to 唱/伴 on the jianpu staff"
     )
+
+
+def test_smplr_bundle_is_vendored():
+    text = (static_dir() / "smplr.mjs").read_text(encoding="utf-8")
+    assert "SplendidGrandPiano" in text
+    assert "https://danigb.github.io/samples/splendid-grand-piano" in text
+    assert "export {" in text
+
+
+def test_piano_voice_schedules_partials():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required to check the piano voice")
+    script = Path(__file__).resolve().parent / "piano_voice.js"
+    result = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_jianpu_svg_is_numbered_notation():

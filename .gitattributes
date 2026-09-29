@@ -14,3 +14,4 @@ uv.lock linguist-generated=true
 *.flac binary
 *.wav binary
 *.js text
+*.mjs text

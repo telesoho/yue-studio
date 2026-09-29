@@ -35,6 +35,7 @@ async (display, previous, clean, job, audio) => {
 # execute before abc2svg exists and never register. score_edit.js loads the
 # two files itself, abc2svg first.
 EDITOR_HEAD = """
+<script src="/gradio_api/file=static/piano.js"></script>
 <script src="/gradio_api/file=static/score_edit.js"></script>
 """
 

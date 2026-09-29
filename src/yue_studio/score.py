@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import abc_tools_path, abcjs_path
+from .paths import abc_tools_path, abcjs_path, static_dir
 
 
 def load_abc_tools(path: Path | None = None):
@@ -59,6 +59,8 @@ const paper = document.getElementById("paper");
 const transport = document.getElementById("transport");
 const playBtn = document.getElementById("play");
 const stopBtn = document.getElementById("stop");
+const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6l8.2-4.8z"/></svg>';
+const PAUSE_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h2.6v10H4zm5.4 0H12v10H9.4z"/></svg>';
 const clock = document.getElementById("clock");
 const seek = document.getElementById("seek");
 const tempoEl = document.getElementById("tempo");
@@ -74,6 +76,8 @@ const state = {
   voices: [],
   timer: null,
   playing: false,
+  arming: false,
+  token: 0,
   offset: 0,
   startedAt: 0,
   raf: 0,
@@ -81,8 +85,11 @@ const state = {
   tonicMidi: 60, // C4 by default; ABC K: header could override
 };
 
-function midiToFreq(midi) {
-  return 440 * Math.pow(2, (midi - 69) / 12);
+function showPlay(playing) {
+  playBtn.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
+  playBtn.setAttribute("aria-pressed", playing ? "true" : "false");
+  playBtn.setAttribute("aria-label", playing ? "暂停" : "播放");
+  playBtn.title = playing ? "暂停" : "播放";
 }
 
 function formatTime(seconds) {
@@ -118,11 +125,40 @@ function collectNotes(visual) {
       });
     }
   }
-  return {
-    notes,
-    total: totalTime || notes.reduce((max, note) => Math.max(max, note.start + note.duration), 0),
-    bpm,
-  };
+  const total = totalTime || notes.reduce((max, note) => Math.max(max, note.start + note.duration), 0);
+  const chords = chordNotes(total);
+  const end = chords.reduce((max, note) => Math.max(max, note.start + note.duration), total);
+  return { notes: notes.concat(chords), total: end, bpm: bpm };
+}
+
+function chordNotes(melodyEnd) {
+  if (!window.yueScoreEditor || !window.yueScoreEditor.timeline) return [];
+  let scored;
+  try { scored = window.yueScoreEditor.timeline(abc); }
+  catch (err) { return []; }
+  const chords = [];
+  let chordEnd = 0;
+  for (const note of scored.notes || []) {
+    if (note.voice !== "Chord") continue;
+    chords.push({
+      start: note.start,
+      duration: Math.max(0.05, note.duration),
+      pitch: note.midi,
+      volume: note.volume || 0.16,
+      velocity: note.velocity || 86,
+    });
+    chordEnd = Math.max(chordEnd, note.start + note.duration);
+  }
+  if (melodyEnd > 0.2 && chordEnd > 0.2) {
+    const scale = melodyEnd / chordEnd;
+    if (Math.abs(scale - 1) > 0.02) {
+      for (const note of chords) {
+        note.start *= scale;
+        note.duration *= scale;
+      }
+    }
+  }
+  return chords;
 }
 
 function ensureCtx() {
@@ -141,21 +177,8 @@ function silence() {
 }
 
 function scheduleNote(note, when, duration) {
-  const ctx = state.ctx;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = "triangle";
-  osc.frequency.setValueAtTime(midiToFreq(note.pitch), when);
-  gain.gain.setValueAtTime(0.0001, when);
-  gain.gain.exponentialRampToValueAtTime(note.volume, when + 0.012);
-  const releaseAt = when + Math.max(0.04, duration - 0.03);
-  gain.gain.setValueAtTime(note.volume, releaseAt);
-  gain.gain.exponentialRampToValueAtTime(0.0001, when + duration + 0.04);
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.start(when);
-  osc.stop(when + duration + 0.05);
-  state.voices.push(osc, gain);
+  if (!window.yuePiano) throw new Error("钢琴音色未加载");
+  window.yuePiano.schedule(state.ctx, note, when, duration, state.voices);
 }
 
 function nowPosition() {
@@ -180,10 +203,24 @@ function startTimer(position) {
   state.timer.start(position, "seconds");
 }
 
+function prepareVoice(ctx) {
+  if (!window.yuePiano || !window.yuePiano.prepare) return Promise.resolve({ kind: "synthetic" });
+  return window.yuePiano.prepare(ctx);
+}
+
 function playFrom(position) {
   const ctx = ensureCtx();
+  const token = ++state.token;
+  state.arming = true;
+  showPlay(true);
+  const known = window.yuePiano && window.yuePiano.voice && window.yuePiano.voice(ctx);
+  if (!known) hint.textContent = "正在加载钢琴音色";
   const resume = ctx.resume ? ctx.resume() : Promise.resolve();
   return Promise.resolve(resume).then(function () {
+    return prepareVoice(ctx);
+  }).then(function (voice) {
+    if (token !== state.token) return;
+    state.arming = false;
     silence();
     const offset = Math.max(0, Math.min(position, state.total));
     const when0 = ctx.currentTime;
@@ -197,23 +234,27 @@ function playFrom(position) {
       scheduleNote(note, when, duration);
     }
     startTimer(offset);
-    playBtn.textContent = "暂停";
-    playBtn.setAttribute("aria-pressed", "true");
-    hint.textContent = "试听曲谱";
+    showPlay(true);
+    hint.textContent = voice && voice.kind === "synthetic" ? "合成音色试听" : "钢琴试听";
     cancelAnimationFrame(state.raf);
     tick();
   });
 }
 
 function pause() {
-  if (!state.playing) return;
+  state.token += 1;
+  state.arming = false;
+  if (!state.playing) {
+    showPlay(false);
+    hint.textContent = "钢琴试听";
+    return;
+  }
   state.offset = nowPosition();
   state.playing = false;
   silence();
   if (state.timer && state.timer.pause) state.timer.pause();
   cancelAnimationFrame(state.raf);
-  playBtn.textContent = "播放";
-  playBtn.setAttribute("aria-pressed", "false");
+  showPlay(false);
   setClock(state.offset);
 }
 
@@ -223,19 +264,22 @@ function finish() {
   silence();
   if (state.timer && state.timer.stop) state.timer.stop();
   cancelAnimationFrame(state.raf);
-  playBtn.textContent = "播放";
-  playBtn.setAttribute("aria-pressed", "false");
+  showPlay(false);
   setClock(0);
 }
 
 function stopPlayback() {
+  state.token += 1;
+  state.arming = false;
   finish();
+  hint.textContent = "钢琴试听";
 }
 
 function togglePlay() {
   if (!state.notes.length) return;
-  if (state.playing) pause();
+  if (state.playing || state.arming) pause();
   else playFrom(state.offset >= state.total ? 0 : state.offset).catch(function (err) {
+    state.arming = false;
     hint.textContent = String(err.message || err);
   });
 }
@@ -244,13 +288,20 @@ function pingPitches(pitches) {
   if (!pitches || !pitches.length) return;
   try {
     const ctx = ensureCtx();
+    const known = window.yuePiano && window.yuePiano.voice && window.yuePiano.voice(ctx);
+    if (!known && !state.playing) hint.textContent = "正在加载钢琴音色";
     Promise.resolve(ctx.resume && ctx.resume()).then(function () {
+      return prepareVoice(ctx);
+    }).then(function (voice) {
       const when = ctx.currentTime;
       for (const item of pitches) {
         scheduleNote({
           pitch: item.pitch,
           volume: 0.16,
         }, when, Math.max(0.18, (item.durationInMeasures || 0.25) * 0.7));
+      }
+      if (!state.playing) {
+        hint.textContent = voice && voice.kind === "synthetic" ? "合成音色试听" : "钢琴试听";
       }
     });
   } catch (err) {}
@@ -392,9 +443,7 @@ try {
       } else if (ABCJS.TimingCallbacks) {
         state.timer = new ABCJS.TimingCallbacks(visual, {
           eventCallback: function (ev) {
-            if (!ev) {
-              if (state.playing) finish();
-            }
+            if (!ev && state.playing && nowPosition() >= Math.max(0.2, state.total - 0.05)) finish();
           }
         });
       }
@@ -447,6 +496,11 @@ _SCORE_DOCUMENT = """<!DOCTYPE html>
     border-radius:6px; letter-spacing:0.04em;
     box-shadow: 0 2px 8px -2px rgba(255, 122, 69, 0.5);
   }
+  #transport button.icon {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:28px; height:28px; padding:0;
+  }
+  #transport button.icon svg { width:14px; height:14px; display:block; fill:currentColor; }
   #transport button[disabled] { opacity:0.45; cursor:default; box-shadow:none; }
   #transport button[aria-pressed="true"] { background:#e85a25; color:#fff; }
   #clock, #tempo { color:#c5cee0; min-width:5.5em; font-weight:500; }
@@ -488,18 +542,27 @@ _SCORE_DOCUMENT = """<!DOCTYPE html>
   .jianpu-body svg { display:block; margin:0 auto; max-width:100%; height:auto; }
   .jianpu-empty { padding:40px; text-align:center; color:#8a7a58; font-size:13px; }
 </style>
+<script>
+window.__YUE_SMPLR_SOURCE__ = __SMPLR_JS__;
+</script>
+<script>
+__PIANO_JS__
+</script>
+<script>
+__EDITOR_JS__
+</script>
 <script src="__ABC2SVG_SRC__" defer></script>
 <script src="__JIANPU_SRC__" defer></script>
 <script>__ABCJS__</script>
 </head>
 <body>
 <div id="transport">
-  <button id="play" type="button" aria-pressed="false">播放</button>
-  <button id="stop" type="button">停止</button>
+  <button id="play" type="button" class="icon" aria-pressed="false" aria-label="播放" title="播放"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6l8.2-4.8z"/></svg></button>
+  <button id="stop" type="button" class="icon" aria-label="停止" title="停止"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4h8v8H4z"/></svg></button>
   <span id="tempo"></span>
   <input id="seek" type="range" min="0" max="1000" value="0" aria-label="进度"/>
   <span id="clock">0:00 / 0:00</span>
-  <span id="hint">试听曲谱</span>
+  <span id="hint">钢琴试听</span>
   <div id="tabs">
     <button id="abcBtn" type="button" title="五线谱">五线谱</button>
     <button id="jianpuBtn" type="button" title="简谱">简谱</button>
@@ -529,6 +592,9 @@ def score_html(abc: str, *, abcjs: Path | None = None,
         .replace("__ABC__", json.dumps(abc))
         .replace("__ABC2SVG_SRC__", abc2svg_src)
         .replace("__JIANPU_SRC__", jianpu_src)
+        .replace("__SMPLR_JS__", json.dumps((static_dir() / "smplr.mjs").read_text(encoding="utf-8")))
+        .replace("__PIANO_JS__", (static_dir() / "piano.js").read_text(encoding="utf-8"))
+        .replace("__EDITOR_JS__", (static_dir() / "score_edit.js").read_text(encoding="utf-8"))
     )
     return (
         '<iframe class="score-frame" sandbox="allow-scripts" allow="autoplay" '

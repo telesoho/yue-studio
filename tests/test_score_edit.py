@@ -246,10 +246,22 @@ def test_jianpu_edit_script_renders_heads():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_editor_head_loads_score_script_only():
+def test_editor_plays_with_the_piano_voice():
+    text = (Path(__file__).resolve().parents[1] / "static" / "score_edit.js").read_text(encoding="utf-8")
+    assert "yuePiano.schedule" in text
+    assert "yuePiano.prepare" in text
+    assert "正在加载钢琴音色" in text
+    assert 'osc.type = "triangle"' not in text
+    assert 'aria-label="播放"' in text
+    assert "pauseMidi" in text
+    assert "playMidiFrom" in text
+    assert "soundingNotes" in text
+
+
+def test_editor_head_loads_piano_before_the_editor():
     from yue_studio.score_edit import EDITOR_HEAD
 
-    assert "score_edit.js" in EDITOR_HEAD
+    assert EDITOR_HEAD.index("piano.js") < EDITOR_HEAD.index("score_edit.js")
     assert "abc2svg-1.js" not in EDITOR_HEAD
     assert "jianpu-1.js" not in EDITOR_HEAD
 

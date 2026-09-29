@@ -14,6 +14,9 @@
   "use strict";
 
   const DURATIONS = new Set([1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48]);
+  const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6l8.2-4.8z"/></svg>';
+  const PAUSE_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h2.6v10H4zm5.4 0H12v10H9.4z"/></svg>';
+  const STOP_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4h8v8H4z"/></svg>';
   const STEPS = "CDEFGAB";
   const NATURAL = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
   const ACC = { "^^": 2, "^": 1, "=": 0, _: -1, __: -2 };
@@ -260,6 +263,7 @@
     let barIndex = 0;
     let barUnits = 0;
     let pendingTie = false;
+    let pendingChord = "";
     let i = 0;
     while (i < line.length) {
       const ch = line[i];
@@ -293,7 +297,9 @@
           acc: "",
           letter: "z",
           marks: "",
+          chord: pendingChord,
         });
+        pendingChord = "";
         barUnits += units;
         pendingTie = false;
         i += zrest[0].length;
@@ -303,6 +309,7 @@
       if (!match) return { error: "读不懂这里的记号" };
       const raw = match[0];
       if (match[1] != null) {
+        pendingChord = match[1];
         i += raw.length;
         continue;
       }
@@ -330,7 +337,9 @@
         acc: match[3] || "",
         letter: match[4],
         marks: match[5] || "",
+        chord: pendingChord,
       });
+      pendingChord = "";
       barUnits += units;
       pendingTie = tie;
       i += raw.length;
@@ -852,11 +861,57 @@
     return indexes;
   }
 
+  const CHORD_INTERVALS = {
+    "": [0, 4, 7],
+    m: [0, 3, 7],
+    dim: [0, 3, 6],
+    aug: [0, 4, 8],
+    "7": [0, 4, 7, 10],
+    maj7: [0, 4, 7, 11],
+    m7: [0, 3, 7, 10],
+    dim7: [0, 3, 6, 9],
+    m7b5: [0, 3, 6, 10],
+    sus4: [0, 5, 7],
+    sus2: [0, 2, 7],
+    "6": [0, 4, 7, 9],
+    m6: [0, 3, 7, 9],
+    "7sus4": [0, 5, 7, 10],
+    "m(maj7)": [0, 3, 7, 11],
+  };
+  const CHORD_RE = /^([A-G](?:bb|##|b|#)?)(m\(maj7\)|maj7|dim7|m7b5|7sus4|sus4|sus2|m7|m6|dim|aug|7|6|m)?(?:\/([A-G](?:bb|##|b|#)?))?$/;
+  const CHORD_ACC = { bb: -2, "##": 2, b: -1, "#": 1 };
+
+  function pitchClass(name) {
+    const match = /^([A-G])(bb|##|b|#)?$/.exec(name || "");
+    if (!match) return null;
+    return (NATURAL[match[1]] + (CHORD_ACC[match[2]] || 0) + 12) % 12;
+  }
+
+  // Chord tones sit in the C4 octave so they stay audible on small speakers.
+  // A slash bass, or the root, is added an octave below.
+  function spellChord(symbol) {
+    const match = CHORD_RE.exec(String(symbol || "").trim());
+    if (!match) return null;
+    const root = pitchClass(match[1]);
+    const quality = match[2] || "";
+    const bass = match[3] ? pitchClass(match[3]) : root;
+    const intervals = CHORD_INTERVALS[quality];
+    if (root == null || bass == null || !intervals) return null;
+    const tones = [];
+    for (const interval of intervals) tones.push(60 + ((root + interval) % 12));
+    let low = 48 + bass;
+    if (low >= 60) low -= 12;
+    if (tones.indexOf(low) < 0) tones.unshift(low);
+    tones.sort((a, b) => a - b);
+    return tones.filter((midi, index) => tones.indexOf(midi) === index);
+  }
+
   function scheduleVoice(events, quarter, voice) {
     let units = 0;
     let barKey = null;
     let local = {};
     const notes = [];
+    const chords = [];
     for (const ev of events) {
       const key = ev.line + ":" + ev.barIndex;
       if (key !== barKey) {
@@ -865,6 +920,7 @@
       }
       const startQ = units * quarter;
       units += ev.units;
+      if (ev.chord && spellChord(ev.chord)) chords.push({ symbol: ev.chord, startQ: startQ });
       if (ev.kind !== "note") continue;
       const midi = midiNumber(ev.letter, ev.marks, ev.acc, ev.key, local);
       if (ev.acc) local[ev.letter.toUpperCase()] = ACC[ev.acc];
@@ -877,6 +933,31 @@
       }
       notes.push({ midi: midi, startQ: startQ, endQ: endQ, voice: voice, indexes: [ev.index] });
     }
+    return { notes: notes, chords: chords, endQ: units * quarter };
+  }
+
+  function chordNotes(changes, endQ, bpm) {
+    const notes = [];
+    for (let i = 0; i < changes.length; i++) {
+      const change = changes[i];
+      const until = i + 1 < changes.length ? changes[i + 1].startQ : endQ;
+      if (until - change.startQ <= 1e-6) continue;
+      const tones = spellChord(change.symbol);
+      if (!tones) continue;
+      const start = change.startQ * 60 / bpm;
+      const duration = (until - change.startQ) * 60 / bpm;
+      for (const midi of tones) {
+        notes.push({
+          midi: midi,
+          voice: "Chord",
+          start: start,
+          duration: duration,
+          indexes: [],
+          volume: 0.16,
+          velocity: 86,
+        });
+      }
+    }
     return notes;
   }
 
@@ -884,19 +965,21 @@
     const parsed = collect(abc);
     if (parsed.error) return { bpm: 120, notes: [], error: parsed.error };
     const quarter = 4 / parsed.header.lDen;
-    const notes = scheduleVoice(parsed.events, quarter, "Vocal")
-      .concat(scheduleVoice(parsed.ins || [], quarter, "Ins"));
+    const vocal = scheduleVoice(parsed.events, quarter, "Vocal");
+    const ins = scheduleVoice(parsed.ins || [], quarter, "Ins");
     const bpm = parsed.header.bpm || 120;
+    const notes = vocal.notes.concat(ins.notes).map((note) => ({
+      midi: note.midi,
+      voice: note.voice,
+      start: note.startQ * 60 / bpm,
+      duration: (note.endQ - note.startQ) * 60 / bpm,
+      indexes: note.indexes,
+    }));
+    const endQ = Math.max(vocal.endQ, ins.endQ);
     return {
       bpm: bpm,
       error: null,
-      notes: notes.map((note) => ({
-        midi: note.midi,
-        voice: note.voice,
-        start: note.startQ * 60 / bpm,
-        duration: (note.endQ - note.startQ) * 60 / bpm,
-        indexes: note.indexes,
-      })),
+      notes: notes.concat(chordNotes(vocal.chords, endQ, bpm)),
     };
   }
 
@@ -990,6 +1073,7 @@
     resolve: null,
     nodes: [],
     generation: 0,
+    arming: false,
     ctx: null,
     osc: [],
     raf: 0,
@@ -1001,6 +1085,10 @@
     transport: "midi",
     marks: [],
     sourceTouched: false,
+    midiPlaying: false,
+    midiOffset: 0,
+    midiStartedAt: 0,
+    midiTotal: 0,
   };
 
   function ensureDom() {
@@ -1017,6 +1105,9 @@
       ".yue-jp-bar h2{margin:0 8px 0 0;font-size:16px;font-weight:650;}",
       ".yue-jp-bar button{font:inherit;cursor:pointer;border:0;border-radius:8px;}",
       ".yue-jp-bar button{background:#3a2e22;color:#f6e9c8;padding:6px 10px;}",
+      ".yue-jp-bar button.icon{display:inline-flex;align-items:center;justify-content:center;",
+      "width:32px;height:32px;padding:0;}",
+      ".yue-jp-bar button.icon svg{width:15px;height:15px;display:block;fill:currentColor;}",
       ".yue-jp-bar button.on{box-shadow:inset 0 0 0 2px #e85a25;}",
       ".yue-jp-bar button[hidden]{display:none;}",
       ".yue-jp-bar button.primary{background:#e85a25;color:#fff;}",
@@ -1054,8 +1145,8 @@
       '<span class="yue-jp-meta"></span>',
       '<button type="button" data-act="mode" data-mode="midi" hidden>MIDI</button>',
       '<button type="button" data-act="mode" data-mode="source" hidden>原声</button>',
-      '<button type="button" data-act="play">播放</button>',
-      '<button type="button" data-act="stop">停止</button>',
+      '<button type="button" class="icon" data-act="play" aria-label="播放" title="播放">' + PLAY_ICON + "</button>",
+      '<button type="button" class="icon" data-act="stop" aria-label="停止" title="停止">' + STOP_ICON + "</button>",
       '<span class="yue-jp-clock">0:00</span>',
       '<button type="button" data-act="ok" class="primary">完成</button>',
       '<button type="button" data-act="cancel">取消</button>',
@@ -1723,22 +1814,20 @@
   function playMidi(midi) {
     if (typeof window === "undefined" || midi == null) return;
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return;
+    if (!AudioCtx || !window.yuePiano) return;
     ui.ctx = ui.ctx || new AudioCtx();
-    if (ui.ctx.state === "suspended") ui.ctx.resume();
-    const osc = ui.ctx.createOscillator();
-    const gain = ui.ctx.createGain();
-    osc.type = "triangle";
-    osc.frequency.value = 440 * Math.pow(2, (midi - 69) / 12);
-    const when = ui.ctx.currentTime + 0.02;
-    const dur = 0.42;
-    gain.gain.setValueAtTime(0.0001, when);
-    gain.gain.exponentialRampToValueAtTime(0.2, when + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, when + dur);
-    osc.connect(gain).connect(ui.ctx.destination);
-    osc.start(when);
-    osc.stop(when + dur + 0.03);
-    ui.osc.push(osc);
+    const ctx = ui.ctx;
+    if (ctx.state === "suspended" && ctx.resume) ctx.resume();
+    const known = window.yuePiano.voice && window.yuePiano.voice(ctx);
+    const previous = ui.status ? ui.status.textContent : "";
+    if (!known) setStatus("正在加载钢琴音色");
+    const loading = window.yuePiano.prepare ? window.yuePiano.prepare(ctx) : Promise.resolve(null);
+    Promise.resolve(loading).then(function (voice) {
+      if (!known && ui.status && ui.status.textContent === "正在加载钢琴音色") {
+        setStatus(voice && voice.kind === "synthetic" ? "采样钢琴加载失败，改用合成音色" : previous);
+      }
+      window.yuePiano.schedule(ctx, { midi: midi, volume: 0.18 }, ctx.currentTime + 0.02, 0.42, ui.osc);
+    });
   }
 
   function playbackTransport(hasSource, mode) {
@@ -1783,7 +1872,12 @@
   function setPlayLabel(text) {
     if (!ui.root) return;
     const button = ui.root.querySelector("[data-act='play']");
-    if (button) button.textContent = text;
+    if (!button) return;
+    const playing = text === "暂停";
+    button.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
+    button.setAttribute("aria-label", playing ? "暂停" : "播放");
+    button.setAttribute("aria-pressed", playing ? "true" : "false");
+    button.title = playing ? "暂停" : "播放";
   }
 
   function setPlayClock(now, total) {
@@ -1924,14 +2018,45 @@
     tickSource(audio, generation);
   }
 
-  function stopPlayback() {
-    ui.generation += 1;
-    if (ui.raf) cancelAnimationFrame(ui.raf);
-    ui.raf = 0;
-    for (const osc of ui.osc) {
-      try { osc.stop(); } catch (err) { /* already stopped */ }
+  function soundingNotes(notes, offset) {
+    const at = Math.max(0, offset || 0);
+    const queued = [];
+    for (const note of notes || []) {
+      const end = note.start + note.duration;
+      if (end <= at + 1e-4) continue;
+      queued.push({
+        note: note,
+        delay: Math.max(0, note.start - at),
+        duration: end - Math.max(at, note.start),
+      });
+    }
+    return queued;
+  }
+
+  function silenceMidi() {
+    for (const node of ui.osc) {
+      try { if (node.stop) node.stop(); } catch (err) { /* already stopped */ }
+      try { if (node.disconnect) node.disconnect(); } catch (err) {}
     }
     ui.osc = [];
+  }
+
+  function midiNow() {
+    if (!ui.midiPlaying || !ui.ctx) return ui.midiOffset || 0;
+    const elapsed = ui.ctx.currentTime - ui.midiStartedAt;
+    return Math.min(ui.midiTotal || 0, Math.max(0, (ui.midiOffset || 0) + elapsed));
+  }
+
+  function stopPlayback() {
+    ui.generation += 1;
+    ui.arming = false;
+    ui.midiPlaying = false;
+    ui.midiOffset = 0;
+    ui.midiStartedAt = 0;
+    ui.midiTotal = 0;
+    if (ui.raf) cancelAnimationFrame(ui.raf);
+    ui.raf = 0;
+    silenceMidi();
     if (ui.audio) {
       ui.audio.pause();
       try { ui.audio.currentTime = 0; } catch (err) { /* not seekable yet */ }
@@ -1943,15 +2068,23 @@
     if (ui.clock) ui.clock.textContent = "0:00";
   }
 
-  function togglePlay() {
-    if (ui.transport === "source" && ui.audioUrl) {
-      toggleSource();
-      return;
+  function pauseMidi() {
+    const position = midiNow();
+    ui.generation += 1;
+    ui.arming = false;
+    ui.midiPlaying = false;
+    if (ui.raf) cancelAnimationFrame(ui.raf);
+    ui.raf = 0;
+    silenceMidi();
+    ui.midiOffset = Math.max(0, position);
+    setPlayLabel("播放");
+    if (ui.midiTotal > 0) {
+      setPlayClock(ui.midiOffset, ui.midiTotal);
+      paintPlayhead(ui.midiOffset);
     }
-    if (ui.raf) {
-      stopPlayback();
-      return;
-    }
+  }
+
+  function playMidiFrom(position) {
     const score = timeline(ui.abc);
     if (score.error || !score.notes.length) {
       setStatus(score.error || "没有可播放的音符");
@@ -1962,56 +2095,96 @@
       setStatus("这个浏览器不能播放 MIDI");
       return;
     }
-    ui.ctx = ui.ctx || new AudioCtx();
-    if (ui.ctx.state === "suspended") ui.ctx.resume();
-    const generation = ++ui.generation;
-    const t0 = ui.ctx.currentTime + 0.05;
-    for (const note of score.notes) {
-      const osc = ui.ctx.createOscillator();
-      const gain = ui.ctx.createGain();
-      osc.type = "triangle";
-      osc.frequency.value = 440 * Math.pow(2, (note.midi - 69) / 12);
-      const when = t0 + note.start;
-      const dur = Math.max(0.06, note.duration);
-      gain.gain.setValueAtTime(0.0001, when);
-      gain.gain.exponentialRampToValueAtTime(0.18, when + 0.015);
-      gain.gain.exponentialRampToValueAtTime(0.0001, when + dur);
-      osc.connect(gain).connect(ui.ctx.destination);
-      osc.start(when);
-      osc.stop(when + dur + 0.03);
-      ui.osc.push(osc);
+    if (!window.yuePiano) {
+      setStatus("钢琴音色未加载");
+      return;
     }
     const total = score.notes.reduce((max, note) => Math.max(max, note.start + note.duration), 0);
-    const marks = playMarks(ui.abc);
-    const tick = () => {
-      if (ui.generation !== generation) return;
-      const now = ui.ctx.currentTime - t0;
-      ui.clock.textContent = formatClock(Math.min(now, total)) + " / " + formatClock(total);
-      const active = new Set();
-      for (const note of score.notes) {
-        if (now >= note.start && now < note.start + note.duration) {
-          note.indexes.forEach((index) => active.add((note.voice || "Vocal") + ":" + index));
-        }
-      }
-      heads().forEach((el) => {
-        const key = (el.dataset.voice || "Vocal") + ":" + el.dataset.idx;
-        el.classList.toggle("yue-play", active.has(key));
-      });
-      const mark = cursorAt(marks, Math.max(0, now));
-      const playKey = mark ? mark.voice + ":" + mark.index + ":" + mark.slice : "";
-      if (playKey !== ui.playKey) {
-        const node = headFor(mark);
-        if (node) {
-          ui.playKey = playKey;
-          drawPlayhead(node);
-          followPlayhead(node);
-        }
-      }
-      if (now < total) ui.raf = requestAnimationFrame(tick);
-      else stopPlayback();
-    };
+    let offset = Math.max(0, position || 0);
+    if (offset >= Math.max(0.02, total - 0.02)) offset = 0;
+    ui.ctx = ui.ctx || new AudioCtx();
+    if (ui.ctx.state === "suspended" && ui.ctx.resume) ui.ctx.resume();
+    ui.arming = true;
+    ui.midiTotal = total;
     setPlayLabel("暂停");
-    tick();
+    const known = window.yuePiano.voice && window.yuePiano.voice(ui.ctx);
+    if (!known) setStatus("正在加载钢琴音色");
+    const generation = ++ui.generation;
+    const loading = window.yuePiano.prepare ? window.yuePiano.prepare(ui.ctx) : Promise.resolve(null);
+    Promise.resolve(loading).then(function (voice) {
+      if (ui.generation !== generation) return;
+      ui.arming = false;
+      silenceMidi();
+      const t0 = ui.ctx.currentTime + 0.05;
+      ui.midiPlaying = true;
+      ui.midiOffset = offset;
+      ui.midiStartedAt = t0;
+      ui.midiTotal = total;
+      for (const item of soundingNotes(score.notes, offset)) {
+        window.yuePiano.schedule(
+          ui.ctx,
+          {
+            midi: item.note.midi,
+            volume: item.note.volume || 0.16,
+            velocity: item.note.velocity,
+          },
+          t0 + item.delay,
+          Math.max(0.06, item.duration),
+          ui.osc,
+        );
+      }
+      setStatus(voice && voice.kind === "synthetic" ? "采样钢琴加载失败，改用合成音色" : playHint());
+      const marks = playMarks(ui.abc);
+      ui.marks = marks;
+      const tick = () => {
+        if (ui.generation !== generation || !ui.midiPlaying) return;
+        const elapsed = ui.ctx.currentTime - ui.midiStartedAt;
+        const now = Math.min(total, ui.midiOffset + Math.max(0, elapsed));
+        setPlayClock(now, total);
+        const active = new Set();
+        for (const note of score.notes) {
+          if (now >= note.start && now < note.start + note.duration) {
+            note.indexes.forEach((index) => active.add((note.voice || "Vocal") + ":" + index));
+          }
+        }
+        heads().forEach((el) => {
+          const key = (el.dataset.voice || "Vocal") + ":" + el.dataset.idx;
+          el.classList.toggle("yue-play", active.has(key));
+        });
+        const mark = cursorAt(marks, Math.max(0, now));
+        const playKey = mark ? mark.voice + ":" + mark.index + ":" + mark.slice : "";
+        if (playKey !== ui.playKey) {
+          const node = headFor(mark);
+          if (node) {
+            ui.playKey = playKey;
+            drawPlayhead(node);
+            followPlayhead(node);
+          }
+        }
+        if (now < total - 0.02) ui.raf = requestAnimationFrame(tick);
+        else stopPlayback();
+      };
+      setPlayLabel("暂停");
+      tick();
+    }).catch(function (err) {
+      if (ui.generation !== generation) return;
+      ui.arming = false;
+      ui.midiPlaying = false;
+      setPlayLabel("播放");
+      setStatus(String((err && err.message) || err));
+    });
+  }
+
+  function togglePlay() {
+    if (ui.transport === "source" && ui.audioUrl) {
+      toggleSource();
+      return;
+    }
+    if (ui.midiPlaying || ui.arming) {
+      pauseMidi();
+      return;
+    }
+    playMidiFrom(ui.midiOffset);
   }
 
   function commitOpenLyric() {
@@ -2070,6 +2243,8 @@
     editScore: editScore,
     listEvents: listEvents,
     timeline: timeline,
+    spellChord: spellChord,
+    soundingNotes: soundingNotes,
     playMarks: playMarks,
     cursorAt: cursorAt,
     markTime: markTime,
