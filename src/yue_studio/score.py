@@ -189,12 +189,33 @@ function nowPosition() {
 function tick() {
   if (!state.playing) return;
   const position = nowPosition();
+  pumpNotes(position);
   setClock(position);
   if (position >= state.total - 0.02) {
     finish();
     return;
   }
   state.raf = requestAnimationFrame(tick);
+}
+
+// Scheduling a whole song at once stalls the audio thread: the clock moves
+// and the speakers stay silent. Arm notes only as the playhead approaches.
+function pumpNotes(position) {
+  const armed = state.armed;
+  if (!armed || !state.ctx) return;
+  const horizon = position + 1.5;
+  const when0 = state.startedAt;
+  const offset = state.offset;
+  for (let i = 0; i < state.notes.length; i++) {
+    if (armed[i]) continue;
+    const note = state.notes[i];
+    if (note.start > horizon) continue;
+    armed[i] = 1;
+    if (note.start + note.duration <= position + 0.02) continue;
+    const when = when0 + Math.max(0, note.start - offset);
+    const duration = note.duration - Math.max(0, offset - note.start);
+    scheduleNote(note, when, duration);
+  }
 }
 
 function startTimer(position) {
@@ -227,12 +248,8 @@ function playFrom(position) {
     state.playing = true;
     state.offset = offset;
     state.startedAt = when0;
-    for (const note of state.notes) {
-      if (note.start + note.duration <= offset) continue;
-      const when = when0 + Math.max(0, note.start - offset);
-      const duration = note.duration - Math.max(0, offset - note.start);
-      scheduleNote(note, when, duration);
-    }
+    state.armed = [];
+    pumpNotes(offset);
     startTimer(offset);
     showPlay(true);
     hint.textContent = voice && voice.kind === "synthetic" ? "合成音色试听" : "钢琴试听";

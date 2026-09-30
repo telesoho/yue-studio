@@ -2,7 +2,7 @@
  * Jianpu editor for Yue Studio.
  * The page shows the vocal staff (唱) and the accompaniment staff (伴).
  * Both staves edit in the browser. w: lyrics stay on the vocal staff.
- * Double-click a lyric syllable, or a vocal note, to edit that word.
+ * Click a lyric syllable, empty slot, or use 词 / Enter to edit that line.
  * A rest of a half note or longer is drawn as several 0s; the clicked 0 is one edit.
  * Durations are integer L: counts in the YuE set (1 2 3 4 6 8 12 16 24 32 48).
  */
@@ -193,6 +193,76 @@
     return token !== "" && token !== "*" && token !== "-" && token !== "_";
   }
 
+  function isCjkChar(ch) {
+    const code = ch.codePointAt(0);
+    return (code >= 0x3400 && code <= 0x9fff)
+      || (code >= 0xf900 && code <= 0xfaff)
+      || (code >= 0x3040 && code <= 0x30ff)
+      || (code >= 0xac00 && code <= 0xd7af);
+  }
+
+  // Split a pasted lyric line into one token per vocal note.
+  // Spaced text keeps spaces; unspaced CJK is one character per token.
+  function splitLyricLine(text) {
+    const raw = String(text == null ? "" : text).trim();
+    if (!raw) return [];
+    if (/\s/.test(raw)) {
+      return raw.split(/\s+/).filter(Boolean).map((token) => {
+        if (token === "·" || token === "*") return "*";
+        if (token === "-") return "-";
+        return token.replace(/[|\s]/g, "") || "*";
+      });
+    }
+    const tokens = [];
+    let i = 0;
+    while (i < raw.length) {
+      const ch = raw[i];
+      if (ch === "·" || ch === "*") {
+        tokens.push("*");
+        i += 1;
+        continue;
+      }
+      if (ch === "-") {
+        tokens.push("-");
+        i += 1;
+        continue;
+      }
+      if (isCjkChar(ch)) {
+        tokens.push(ch);
+        i += 1;
+        continue;
+      }
+      let j = i + 1;
+      while (
+        j < raw.length
+        && !isCjkChar(raw[j])
+        && raw[j] !== "·"
+        && raw[j] !== "*"
+        && raw[j] !== "-"
+      ) {
+        j += 1;
+      }
+      const word = raw.slice(i, j).replace(/[|\s]/g, "");
+      if (word) tokens.push(word);
+      i = j;
+    }
+    return tokens;
+  }
+
+  function displayLyricToken(lyric) {
+    const text = String(lyric == null ? "*" : lyric).trim();
+    if (!text || text === "*") return "·";
+    if (text === "-") return "-";
+    return text;
+  }
+
+  function lineLyricText(events, lineNo) {
+    return events
+      .filter((ev) => !ev.removed && ev.line === lineNo && ev.kind === "note")
+      .map((ev) => displayLyricToken(ev.lyric))
+      .join(" ");
+  }
+
   function clusterRows(items, slack) {
     const sorted = items.slice().sort((a, b) => a.y - b.y || a.x - b.x);
     const rows = [];
@@ -206,6 +276,7 @@
   }
 
   // Pair lyric glyphs with the vocal notes above them. Rests and melismas draw no syllable.
+  // When counts disagree, bind the shorter side left-to-right.
   function assignLyricHits(heads, glyphs, drawn, limits) {
     const slack = limits && limits.rowSlack != null ? limits.rowSlack : 8;
     const maxGap = limits && limits.maxGap != null ? limits.maxGap : 80;
@@ -233,8 +304,9 @@
         indexes.push(head.index);
       }
       const slots = indexes.filter((index) => drawn && drawn[index]);
-      if (slots.length !== row.items.length) continue;
-      row.items.forEach((glyph, i) => hits.push({ glyph: glyph, index: slots[i] }));
+      const count = Math.min(slots.length, row.items.length);
+      if (!count) continue;
+      for (let i = 0; i < count; i++) hits.push({ glyph: row.items[i], index: slots[i] });
     }
     return hits;
   }
@@ -633,6 +705,7 @@
     const ev = events[index];
     const op = command.op;
     let lyricsDirty = false;
+    let leftover = 0;
     let select = index;
     const oldSum = barSum(events, ev);
 
@@ -796,6 +869,22 @@
       const text = String(command.text == null ? "" : command.text).trim();
       ev.lyric = text && text !== "*" ? text : "*";
       lyricsDirty = true;
+    } else if (op === "lyric-line") {
+      if (voice === "Ins") return { abc: abc, error: "伴奏没有歌词" };
+      const lineNo = ev.line;
+      const notes = events.filter((item) => !item.removed && item.line === lineNo && item.kind === "note");
+      if (!notes.length) return { abc: abc, error: "这一行没有可填词的音" };
+      const tokens = splitLyricLine(command.text);
+      notes.forEach((note, i) => {
+        if (i < tokens.length) {
+          const token = tokens[i];
+          note.lyric = token && token !== "*" ? token : "*";
+        } else {
+          note.lyric = "*";
+        }
+      });
+      leftover = Math.max(0, tokens.length - notes.length);
+      lyricsDirty = true;
     } else {
       return { abc: abc, error: "不支持这个修改" };
     }
@@ -805,7 +894,9 @@
     const lines = parsed.lines.slice();
     rewriteMusic(lines, events);
     if (lyricsDirty && voice !== "Ins") rewriteLyrics(lines, events);
-    return { abc: joinAbc(lines, abc), error: null, index: select };
+    const result = { abc: joinAbc(lines, abc), error: null, index: select };
+    if (leftover) result.leftover = leftover;
+    return result;
   }
 
   function accidentalName(acc) {
@@ -1126,8 +1217,12 @@
       ".yue-jp-paper svg{max-width:100%;height:auto;}",
       ".yue-sel-box{fill:rgba(224,49,49,.16);stroke:#e03131;pointer-events:none;}",
       ".yue-jp-lyric{position:absolute;z-index:3;box-sizing:border-box;font:inherit;",
-      "font-weight:700;font-size:15px;padding:1px 6px;",
+      "font-weight:700;font-size:15px;padding:4px 8px;",
       "border-radius:8px;border:2px solid #e03131;background:#fffaf0;color:#2a1f12;}",
+      ".yue-jp-lyric-line{min-width:220px;width:auto;}",
+      ".yue-jp-empty-lyric{position:absolute;z-index:2;cursor:text;color:#a89880;",
+      "font-weight:700;font-size:15px;line-height:1;user-select:none;padding:0 2px;}",
+      ".yue-jp-empty-lyric.yue-sel{color:#c22525;}",
       "text[data-lyric]{cursor:text;}",
       "text[data-lyric].yue-sel{fill:#c22525;}",
       "text.fj.yue-sel{fill:#c22525;}",
@@ -1186,7 +1281,7 @@
         finish(ui.abc);
       }
       else if (act === "cancel") finish(null);
-      else if (act === "lyric") beginLyric(ui.index);
+      else if (act === "lyric") beginLyricLine(ui.index);
       else if (button && ui.tools.contains(button)) {
         const command = commandFrom(button);
         if (!command) return;
@@ -1199,16 +1294,13 @@
       if (!picked) return;
       selectNote(picked.voice, picked.index, picked.slice);
       if (ui.transport === "source") seekSource(picked);
-    });
-    ui.paper.addEventListener("dblclick", (ev) => {
-      const picked = pickedHead(ev.target);
-      if (!picked) return;
-      if (picked.voice !== "Vocal") {
-        setStatus("伴奏没有歌词");
-        return;
+      if (picked.lyric) {
+        if (picked.voice !== "Vocal") {
+          setStatus("伴奏没有歌词");
+          return;
+        }
+        beginLyricLine(picked.index);
       }
-      ev.preventDefault();
-      beginLyric(picked.index);
     });
     document.addEventListener("keydown", (event) => {
       if (!ui.root || ui.root.hidden) return;
@@ -1253,7 +1345,7 @@
         { label: "连音", title: "连音符：接到后面同样的音，再按一次取消", attrs: { act: "tie" } },
         { label: "插入", title: "在这个音后面插入", attrs: { act: "insert" } },
         { label: "删除", title: "删除这个音", attrs: { act: "delete" } },
-        { label: "词", title: "改这个音的歌词", attrs: { act: "lyric" } },
+        { label: "词", title: "改这一行的歌词", attrs: { act: "lyric" } },
       ],
     ];
     groups.forEach((specs) => {
@@ -1294,7 +1386,9 @@
   }
 
   function pickedHead(target) {
-    const lyric = target && target.closest && target.closest("text[data-lyric]");
+    const lyric = target && target.closest && (
+      target.closest("text[data-lyric]") || target.closest(".yue-jp-empty-lyric")
+    );
     if (lyric && lyric.dataset.idx != null && lyric.dataset.idx !== "") {
       const lyricIndex = Number(lyric.dataset.idx);
       if (Number.isInteger(lyricIndex)) {
@@ -1411,7 +1505,7 @@
       if (on) drawSelectionBox(el);
     });
     if (ui.paper) {
-      ui.paper.querySelectorAll("text[data-lyric]").forEach((el) => {
+      ui.paper.querySelectorAll("text[data-lyric], .yue-jp-empty-lyric").forEach((el) => {
         const on = (ui.voice || "Vocal") !== "Ins" && Number(el.dataset.idx) === ui.index;
         el.classList.toggle("yue-sel", on);
       });
@@ -1596,6 +1690,7 @@
 
   function stampLyrics() {
     if (!ui.paper || !ui.paper.querySelectorAll) return;
+    ui.paper.querySelectorAll(".yue-jp-empty-lyric").forEach((el) => el.remove());
     const vocal = heads().filter((el) => el.dataset.voice === "Vocal");
     const events = eventsFor(ui.abc, "Vocal");
     const drawn = {};
@@ -1637,7 +1732,9 @@
       rowSlack: Math.max(4, noteH * 0.6),
       maxGap: Math.max(48, noteH * 4),
     });
+    const hitIndexes = new Set();
     hits.forEach((hit) => {
+      hitIndexes.add(hit.index);
       const el = hit.glyph.el;
       el.dataset.lyric = "1";
       el.dataset.voice = "Vocal";
@@ -1645,20 +1742,38 @@
       el.setAttribute("role", "button");
       el.setAttribute("aria-label", "歌词 " + (el.textContent || "").replace(/\s+/g, ""));
     });
+    const host = ui.paper.getBoundingClientRect();
+    events.forEach((ev) => {
+      if (ev.kind !== "note") return;
+      if (hitIndexes.has(ev.index)) return;
+      const head = vocal.find((el) => Number(el.dataset.idx) === ev.index);
+      if (!head || !head.getBoundingClientRect) return;
+      const box = head.getBoundingClientRect();
+      if (!(box.width || box.height)) return;
+      const span = document.createElement("span");
+      span.className = "yue-jp-empty-lyric";
+      span.dataset.lyric = "1";
+      span.dataset.voice = "Vocal";
+      span.dataset.idx = String(ev.index);
+      span.setAttribute("role", "button");
+      span.setAttribute("aria-label", "空歌词");
+      span.textContent = "·";
+      const left = box.left - host.left + ui.paper.scrollLeft + box.width / 2 - 5;
+      const top = box.bottom - host.top + ui.paper.scrollTop + Math.max(2, noteH * 0.15);
+      span.style.left = left + "px";
+      span.style.top = top + "px";
+      ui.paper.appendChild(span);
+    });
   }
 
-  function nextNoteIndex(abc, index) {
-    const events = eventsFor(abc, "Vocal");
-    for (let i = index + 1; i < events.length; i++) {
-      if (events[i].kind === "note") return i;
-    }
-    return -1;
-  }
-
-  function beginLyric(index) {
+  function beginLyricLine(index) {
     if (ui.lyricInput) ui.lyricInput.blur();
-    const info = inspectScore(ui.abc);
-    const ev = info.events[index];
+    const parsed = collect(ui.abc);
+    if (parsed.error) {
+      setStatus(parsed.error);
+      return;
+    }
+    const ev = parsed.events[index];
     if (!ev || ev.kind !== "note") {
       setStatus(index < 0 ? "先点一个音符" : "休止的歌词是 *");
       return;
@@ -1668,46 +1783,44 @@
     ui.slice = 0;
     ui.lyricIndex = index;
     markSelection();
+    const lineNotes = parsed.events.filter((item) => item.line === ev.line && item.kind === "note");
+    const value = lineLyricText(parsed.events, ev.line);
     const input = document.createElement("input");
-    input.className = "yue-jp-lyric";
-    input.setAttribute("aria-label", "歌词");
+    input.className = "yue-jp-lyric yue-jp-lyric-line";
+    input.setAttribute("aria-label", "这一行的歌词");
     input.setAttribute("autocomplete", "off");
     input.setAttribute("spellcheck", "false");
-    input.value = ev.lyric && ev.lyric !== "*" ? ev.lyric : "";
-    placeLyricInput(input, index);
+    input.value = value;
+    placeLyricLineInput(input, lineNotes);
     ui.paper.appendChild(input);
     ui.lyricInput = input;
     let composing = false;
     let commitAfterCompose = false;
-    const commit = (advance) => {
+    const commit = () => {
       if (ui.lyricInput !== input) return;
       ui.lyricInput = null;
-      let ok = false;
       try {
-        ok = run({ op: "lyric", index: index, voice: "Vocal", slice: null, text: input.value });
+        run({ op: "lyric-line", index: index, voice: "Vocal", slice: null, text: input.value });
       } catch (err) {
         setStatus(String(err && err.message || err));
       }
-      if (!ok || !advance) return;
-      const next = nextNoteIndex(ui.abc, index);
-      if (next >= 0) beginLyric(next);
     };
     input.addEventListener("compositionstart", () => { composing = true; });
     input.addEventListener("compositionend", () => {
       composing = false;
-      if (commitAfterCompose) commit(false);
+      if (commitAfterCompose) commit();
     });
     input.addEventListener("keydown", (event) => {
       event.stopPropagation();
       if (event.isComposing || event.keyCode === 229) return;
       if (event.key === "Enter") {
         event.preventDefault();
-        commit(true);
+        commit();
       } else if (event.key === "Escape") {
         event.preventDefault();
         ui.lyricInput = null;
         renderScore();
-        setStatus("点唱谱或伴奏上的一个音来改。双击歌词改这个字。");
+        setStatus(playHint());
       }
     });
     input.addEventListener("blur", () => {
@@ -1715,25 +1828,51 @@
         commitAfterCompose = true;
         return;
       }
-      commit(false);
+      commit();
     });
+    const tokenAt = lineNotes.findIndex((item) => item.index === index);
     input.focus({ preventScroll: true });
-    input.select();
-    setStatus("回车确认，并改下一个字。Esc 取消。");
+    if (tokenAt >= 0) {
+      const parts = value.split(/\s+/);
+      let start = 0;
+      for (let i = 0; i < tokenAt; i++) start += (parts[i] || "").length + 1;
+      const end = start + (parts[tokenAt] || "").length;
+      try {
+        input.setSelectionRange(start, end);
+      } catch (_err) {
+        input.select();
+      }
+    } else {
+      input.select();
+    }
+    setStatus("回车确认这一行。Esc 取消。");
     playMidi(noteMidi(ui.abc, index, "Vocal"));
   }
 
-  function placeLyricInput(input, index) {
-    const glyph = ui.paper.querySelector('text[data-lyric][data-idx="' + index + '"]');
-    const note = heads().find(sameHead);
-    const place = glyph || note;
-    if (!place || !place.getBoundingClientRect) return;
-    const box = place.getBoundingClientRect();
+  function placeLyricLineInput(input, lineNotes) {
+    if (!ui.paper || !lineNotes || !lineNotes.length) return;
     const host = ui.paper.getBoundingClientRect();
-    input.style.left = (box.left - host.left + ui.paper.scrollLeft) + "px";
-    const top = glyph ? box.top - host.top : box.bottom - host.top + 2;
-    input.style.top = (top + ui.paper.scrollTop) + "px";
-    const width = Math.max(36, Math.round(box.width + 18));
+    const indexes = new Set(lineNotes.map((ev) => ev.index));
+    const lyricEls = [];
+    ui.paper.querySelectorAll("text[data-lyric], .yue-jp-empty-lyric").forEach((el) => {
+      if (indexes.has(Number(el.dataset.idx))) lyricEls.push(el);
+    });
+    const headEls = heads().filter((el) =>
+      (el.dataset.voice || "Vocal") === "Vocal" && indexes.has(Number(el.dataset.idx))
+    );
+    const boxes = (lyricEls.length ? lyricEls : headEls)
+      .map((el) => el.getBoundingClientRect && el.getBoundingClientRect())
+      .filter((box) => box && (box.width || box.height));
+    if (!boxes.length) return;
+    const left = Math.min.apply(null, boxes.map((box) => box.left));
+    const right = Math.max.apply(null, boxes.map((box) => box.right));
+    const bottom = Math.max.apply(null, boxes.map((box) => box.bottom));
+    const topBase = lyricEls.length
+      ? Math.max.apply(null, boxes.map((box) => box.bottom))
+      : bottom;
+    input.style.left = (left - host.left + ui.paper.scrollLeft) + "px";
+    input.style.top = (topBase - host.top + ui.paper.scrollTop + 4) + "px";
+    const width = Math.max(220, Math.round(right - left + 24));
     input.style.width = width + "px";
     input.style.minWidth = width + "px";
   }
@@ -1758,8 +1897,12 @@
       if (next.index != null) ui.index = next.index;
       ui.slice = 0;
     }
-    setStatus("");
+    if (next.leftover) setStatus("还有 " + next.leftover + " 个字没有音符");
+    else setStatus("");
     renderScore();
+    if (next.leftover && ui.status && !ui.status.textContent) {
+      setStatus("还有 " + next.leftover + " 个字没有音符");
+    }
     if (command.op === "degree" || command.op === "octave" || command.op === "accidental") {
       playMidi(noteMidi(ui.abc, ui.index, ui.voice));
     }
@@ -1773,7 +1916,7 @@
     if (key === "Enter") {
       if ((ui.voice || "Vocal") === "Ins") return;
       event.preventDefault();
-      beginLyric(ui.index);
+      beginLyricLine(ui.index);
       return;
     }
     if (key === "ArrowLeft" || key === "ArrowRight") {
@@ -1842,9 +1985,9 @@
 
   function playHint() {
     if (ui.audioUrl) {
-      return "点唱谱或伴奏上的一个音来改，会响起这个音。可播放 MIDI 或源音频；听源音频时点简谱可跳转。双击歌词改这个字。";
+      return "点唱谱或伴奏上的一个音来改，会响起这个音。可播放 MIDI 或源音频；听源音频时点简谱可跳转。单击歌词改这一行。";
     }
-    return "点唱谱或伴奏上的一个音来改，会响起这个音。双击歌词改这个字。";
+    return "点唱谱或伴奏上的一个音来改，会响起这个音。单击歌词改这一行。";
   }
 
   function syncTransport() {
@@ -2033,6 +2176,22 @@
     return queued;
   }
 
+  // A five-minute score is more than a thousand notes. Scheduling every one
+  // at play time stalls the audio thread: the clock still advances, but the
+  // speakers stay silent. Arm only the notes that start inside the lookahead.
+  function pumpMidi(queue, now, ahead) {
+    const horizon = now + (ahead == null ? 1.5 : ahead);
+    const due = [];
+    for (const item of queue || []) {
+      if (!item || item.armed) continue;
+      const note = item.note;
+      if (!note || note.start > horizon) continue;
+      item.armed = true;
+      if (note.start + note.duration > now + 0.02) due.push(item);
+    }
+    return due;
+  }
+
   function silenceMidi() {
     for (const node of ui.osc) {
       try { if (node.stop) node.stop(); } catch (err) { /* already stopped */ }
@@ -2120,26 +2279,31 @@
       ui.midiOffset = offset;
       ui.midiStartedAt = t0;
       ui.midiTotal = total;
-      for (const item of soundingNotes(score.notes, offset)) {
-        window.yuePiano.schedule(
-          ui.ctx,
-          {
-            midi: item.note.midi,
-            volume: item.note.volume || 0.16,
-            velocity: item.note.velocity,
-          },
-          t0 + item.delay,
-          Math.max(0.06, item.duration),
-          ui.osc,
-        );
-      }
+      const queue = soundingNotes(score.notes, offset);
+      const pump = () => {
+        const elapsed = ui.ctx.currentTime - ui.midiStartedAt;
+        const now = Math.min(total, ui.midiOffset + Math.max(0, elapsed));
+        for (const item of pumpMidi(queue, now)) {
+          window.yuePiano.schedule(
+            ui.ctx,
+            {
+              midi: item.note.midi,
+              volume: item.note.volume || 0.16,
+              velocity: item.note.velocity,
+            },
+            ui.midiStartedAt + item.delay,
+            Math.max(0.06, item.duration),
+            ui.osc,
+          );
+        }
+        return now;
+      };
       setStatus(voice && voice.kind === "synthetic" ? "采样钢琴加载失败，改用合成音色" : playHint());
       const marks = playMarks(ui.abc);
       ui.marks = marks;
       const tick = () => {
         if (ui.generation !== generation || !ui.midiPlaying) return;
-        const elapsed = ui.ctx.currentTime - ui.midiStartedAt;
-        const now = Math.min(total, ui.midiOffset + Math.max(0, elapsed));
+        const now = pump();
         setPlayClock(now, total);
         const active = new Set();
         for (const note of score.notes) {
@@ -2193,7 +2357,7 @@
     const lyricIndex = ui.lyricIndex;
     const text = input.value;
     ui.lyricInput = null;
-    run({ op: "lyric", index: lyricIndex, voice: "Vocal", slice: null, text: text });
+    run({ op: "lyric-line", index: lyricIndex, voice: "Vocal", slice: null, text: text });
   }
 
   function finish(value) {
@@ -2245,6 +2409,7 @@
     timeline: timeline,
     spellChord: spellChord,
     soundingNotes: soundingNotes,
+    pumpMidi: pumpMidi,
     playMarks: playMarks,
     cursorAt: cursorAt,
     markTime: markTime,
@@ -2260,6 +2425,7 @@
     headIndexes: headIndexes,
     lyricIsDrawn: lyricIsDrawn,
     assignLyricHits: assignLyricHits,
+    splitLyricLine: splitLyricLine,
     commandOfKey: commandOfKey,
     open: open,
   };

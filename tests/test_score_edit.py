@@ -165,6 +165,82 @@ def test_duration_insert_delete_and_lyric():
     assert '"C"C4D4E4F4|' in lyric["abc"]
 
 
+TWO_LINES = """X:1
+T:
+M:4/4
+L:1/16
+Q:1/4=120
+V: Vocal clef=treble name="Vocal Melody" snm="Vocal"
+V: Ins clef=treble name="Ins Melody" snm="Inst."
+K:C
+% verse
+V: Vocal
+C4D4E4F4|
+w: 春 眠 不 觉
+V: Ins
+Z|
+V: Vocal
+G4A4B4c4|
+w: 晓 处 处 闻
+V: Ins
+Z|
+"""
+
+REST_LYRIC = """X:1
+T:
+M:4/4
+L:1/16
+Q:1/4=120
+V: Vocal clef=treble name="Vocal Melody" snm="Vocal"
+V: Ins clef=treble name="Ins Melody" snm="Inst."
+K:C
+% verse
+V: Vocal
+C4z4D4E4|
+w: 春 眠 晓
+V: Ins
+Z|
+"""
+
+
+def test_lyric_line_fills_notes_on_one_row():
+    cjk = _edit(DISPLAY, op="lyric-line", index=0, text="山重水复疑无雾")
+    assert cjk["error"] is None
+    assert "w: 山 重 水 复 疑 无 雾 *" in cjk["abc"]
+    assert cjk.get("leftover") is None
+    _need_tools()
+    committed = commit_edited_abc(cjk["abc"])
+    assert committed.error is None
+    assert committed.lyrics == "[Verse]\n山重水复疑无雾"
+
+    exact = _edit(DISPLAY, op="lyric-line", index=0, text="山重水复疑无雾海")
+    assert exact["error"] is None
+    assert "w: 山 重 水 复 疑 无 雾 海" in exact["abc"]
+
+    english = _edit(DISPLAY, op="lyric-line", index=0, text="let the day")
+    assert english["error"] is None
+    assert "w: let the day * * * * *" in english["abc"]
+
+    solid = _edit(DISPLAY, op="lyric-line", index=0, text="love-day")
+    assert solid["error"] is None
+    assert "w: love - day * * * * *" in solid["abc"]
+
+    overflow = _edit(TINY, op="lyric-line", index=0, text="一二三四五六")
+    assert overflow["error"] is None
+    assert "w: 一 二 三 四" in overflow["abc"]
+    assert overflow["leftover"] == 2
+
+    short = _edit(TWO_LINES, op="lyric-line", index=0, text="山重")
+    assert short["error"] is None
+    assert "w: 山 重 * *" in short["abc"]
+    assert "w: 晓 处 处 闻" in short["abc"]
+
+    resting = _edit(REST_LYRIC, op="lyric-line", index=0, text="山水画")
+    assert resting["error"] is None
+    assert "w: 山 水 画" in resting["abc"]
+    assert "C4z4D4E4|" in resting["abc"]
+
+
 def test_tie_same_pitch_and_extend_syllable():
     same = DISPLAY.replace('"C"C4D4E4F4|', '"C"C4C4E4F4|', 1)
     tied = _edit(same, op="tie", index=0)
@@ -256,6 +332,7 @@ def test_editor_plays_with_the_piano_voice():
     assert "pauseMidi" in text
     assert "playMidiFrom" in text
     assert "soundingNotes" in text
+    assert "pumpMidi" in text
 
 
 def test_editor_head_loads_piano_before_the_editor():

@@ -306,6 +306,33 @@ red += check(
   lyricHits.map((hit) => hit.glyph.name + ":" + hit.index).join(",")
 );
 
+const partialHits = editor.assignLyricHits(
+  [
+    { x: 90, y: 52, index: 0, voice: "Vocal" },
+    { x: 110, y: 52, index: 1, voice: "Vocal" },
+    { x: 130, y: 52, index: 2, voice: "Vocal" },
+  ],
+  [
+    { x: 89, y: 82, name: "春" },
+    { x: 110, y: 82, name: "眠" },
+  ],
+  { 0: true, 1: true, 2: true }
+);
+red += check(
+  "mismatched lyric counts still bind left to right",
+  partialHits.map((hit) => hit.glyph.name + ":" + hit.index).join(",") === "春:0,眠:1",
+  partialHits.map((hit) => hit.glyph.name + ":" + hit.index).join(",")
+);
+
+red += check(
+  "splitLyricLine cuts CJK and keeps spaced English",
+  editor.splitLyricLine("春眠").join(",") === "春,眠"
+    && editor.splitLyricLine("let the day").join(",") === "let,the,day"
+    && editor.splitLyricLine("love-day").join(",") === "love,-,day"
+    && editor.splitLyricLine("春 · 晓").join(",") === "春,*,晓",
+  editor.splitLyricLine("春眠").join(",")
+);
+
 const sung = editor.editScore(DISPLAY, { op: "lyric", index: 0, text: "山" });
 const sungSvg = render(sung.abc);
 red += check(
@@ -352,6 +379,23 @@ red += check(
   "midi resume skips notes that already ended",
   finished.length === 0,
   JSON.stringify(finished)
+);
+
+const windowQueue = editor.soundingNotes([
+  { start: 0, duration: 1, midi: 60 },
+  { start: 1.2, duration: 0.4, midi: 62 },
+  { start: 10, duration: 1, midi: 64 },
+], 0);
+const opened = editor.pumpMidi(windowQueue, 0);
+const stillLater = editor.pumpMidi(windowQueue, 0);
+const caughtUp = editor.pumpMidi(windowQueue, 9);
+red += check(
+  "midi playback arms only the lookahead, then the rest as the clock advances",
+  opened.length === 2 && opened[0].note.midi === 60 && opened[1].note.midi === 62 &&
+    stillLater.length === 0 &&
+    caughtUp.length === 1 && caughtUp[0].note.midi === 64 &&
+    editor.pumpMidi(windowQueue, 12).length === 0,
+  JSON.stringify({ opened: opened.map((item) => item.note.midi), stillLater: stillLater.length, caughtUp: caughtUp.map((item) => item.note.midi) })
 );
 
 function checkLoadOrder() {
