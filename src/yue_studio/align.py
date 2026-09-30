@@ -5,6 +5,7 @@ staff view only.
 """
 from __future__ import annotations
 
+import bisect
 import json
 import re
 from dataclasses import dataclass, field
@@ -40,9 +41,9 @@ class LyricAlignment:
 
 
 def align_lyrics(abc: str, words: list[dict], *, tools=None) -> LyricAlignment:
-    syllables = syllables_from_words(words or [])
     parsed = _parse(abc, tools)
     if parsed is None:
+        syllables = syllables_from_words(words or [])
         lyrics = join_syllables([item["text"] for item in syllables])
         return LyricAlignment(
             lyrics, abc or "", [], [{"text": item["text"], "start": item["start"], "end": item["end"]}
@@ -55,10 +56,14 @@ def align_lyrics(abc: str, words: list[dict], *, tools=None) -> LyricAlignment:
     groups = vocal_groups(abc)
     spans = _section_spans(groups, vocal.bars, bpm)
     _tag_notes(notes, spans)
-    slots, unassigned = assign_syllables(notes, syllables)
+    timing = lyric_groups(words or [])
+    scale, offset = fit_lyric_timing(notes, timing)
+    slots, unassigned = place_lyric_groups(notes, timing, scale, offset)
     for note, slot in zip(notes, slots):
         note["syllable"] = slot
     warnings = []
+    if scale != 1 or offset != 0:
+        warnings.append(f"歌词时间已按倍率 {scale:.2f}、偏移 {offset:+.2f}s 对齐")
     if unassigned:
         warnings.append(f"有 {len(unassigned)} 个字未能对上旋律音符")
     positioned = _positions_for_groups(groups)
@@ -116,30 +121,129 @@ def syllables_from_words(words: list[dict]) -> list[dict]:
     return syllables
 
 
-def assign_syllables(notes: list[dict], syllables: list[dict]) -> tuple[list[str], list[dict]]:
+def lyric_groups(words: list[dict]) -> list[dict]:
+    """One Whisper token keeps a shared time span for every syllable it contains."""
+    groups = []
+    for order, word in enumerate(words or []):
+        text = str(word.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            start = float(word["start"])
+            end = float(word["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        pieces = _split_word(text)
+        if not pieces:
+            continue
+        groups.append({"start": start, "end": end, "texts": pieces, "order": order})
+    groups.sort(key=lambda item: (item["start"], item["end"], item["order"]))
+    return groups
+
+
+_ONSET_WINDOW = 0.2
+_MIN_OVERLAP = 0.35
+
+
+def fit_lyric_timing(notes: list[dict], groups: list[dict]) -> tuple[float, float]:
+    """Map audio time onto score time: ``score = scale * audio + offset``.
+
+    Word onsets are matched to note onsets. Near-ties prefer the smaller
+    offset, then the scale closer to 1, so a beat-grid shift does not win.
+    """
+    onsets = sorted(float(note["start"]) for note in notes)
+    if not onsets or not groups:
+        return 1.0, 0.0
+    best_score = -1.0
+    near: list[tuple[float, float, float, float]] = []
+    for scale_i in range(90, 111):
+        scale = scale_i / 100
+        for offset_i in range(-20, 21):
+            offset = offset_i / 20
+            score = _onset_score(onsets, groups, scale, offset)
+            if score > best_score + 1e-9:
+                best_score = score
+                near = [(abs(offset), abs(scale - 1), scale, offset)]
+            elif score >= best_score - 1e-9:
+                near.append((abs(offset), abs(scale - 1), scale, offset))
+    _abs_offset, _abs_scale, scale, offset = min(near)
+    return scale, offset
+
+
+def place_lyric_groups(notes: list[dict], groups: list[dict], scale: float,
+                       offset: float) -> tuple[list[str], list[dict]]:
+    """Assign each group's syllables in order. The note cursor only moves forward."""
     slots = [""] * len(notes)
     unassigned = []
-    for syllable in syllables:
-        hits = [
-            index for index, note in enumerate(notes)
-            if note["start"] < syllable["end"] and syllable["start"] < note["end"]
-        ]
-        if not hits:
-            unassigned.append({
-                "text": syllable["text"],
-                "start": syllable["start"],
-                "end": syllable["end"],
-            })
+    cursor = 0
+    ordered = sorted(groups, key=lambda item: (item["start"], item["end"], item.get("order", 0)))
+    for group in ordered:
+        start = scale * float(group["start"]) + offset
+        end = scale * float(group["end"]) + offset
+        texts = list(group["texts"])
+        candidates = _overlap_candidates(notes, cursor, start, end)
+        if not candidates or not texts:
+            unassigned.extend(_unassigned_texts(group, texts))
             continue
-        first = hits[0]
-        if slots[first] in ("", "-"):
-            slots[first] = syllable["text"]
-        else:
-            slots[first] = join_syllables([slots[first], syllable["text"]])
-        for index in hits[1:]:
-            if slots[index] == "":
-                slots[index] = "-"
+        count = min(len(texts), len(candidates))
+        ranked = sorted(candidates, key=lambda item: (-item[1], -item[2], item[0]))
+        picked = [item[0] for item in sorted(ranked[:count], key=lambda item: item[0])]
+        for text, index in zip(texts, picked):
+            slots[index] = text
+        if len(texts) > len(picked):
+            last = picked[-1]
+            slots[last] = join_syllables([slots[last], *texts[len(picked):]])
+        chosen = set(picked)
+        first, last = picked[0], picked[-1]
+        consumed = last
+        for index, _overlap, _duration in candidates:
+            if index in chosen:
+                continue
+            if first < index < last or index > last:
+                if slots[index] == "":
+                    slots[index] = "-"
+                if index > consumed:
+                    consumed = index
+        cursor = consumed + 1
     return slots, unassigned
+
+
+def _onset_score(onsets: list[float], groups: list[dict], scale: float, offset: float) -> float:
+    total = 0.0
+    for group in groups:
+        moment = scale * float(group["start"]) + offset
+        index = bisect.bisect_left(onsets, moment)
+        distance = _ONSET_WINDOW
+        if index < len(onsets):
+            distance = min(distance, onsets[index] - moment)
+        if index > 0:
+            distance = min(distance, moment - onsets[index - 1])
+        if distance < _ONSET_WINDOW:
+            total += 1.0 - distance / _ONSET_WINDOW
+    return total
+
+
+def _overlap_candidates(notes: list[dict], cursor: int, start: float, end: float) -> list[tuple[int, float, float]]:
+    found = []
+    for index in range(cursor, len(notes)):
+        note = notes[index]
+        duration = float(note["end"]) - float(note["start"])
+        if duration <= 0:
+            continue
+        overlap = min(float(note["end"]), end) - max(float(note["start"]), start)
+        if overlap < _MIN_OVERLAP * duration:
+            continue
+        found.append((index, overlap, duration))
+    return found
+
+
+def _unassigned_texts(group: dict, texts: list[str]) -> list[dict]:
+    return [
+        {"text": text, "start": group["start"], "end": group["end"]}
+        for text in texts
+    ]
 
 
 def join_syllables(parts: list[str]) -> str:
