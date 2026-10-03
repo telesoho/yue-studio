@@ -774,6 +774,20 @@ textarea, input[type="text"], input[type="number"] {
   border-radius: var(--radius-sm) !important;
 }
 
+/* Glass cards use backdrop-filter, which traps the fixed dropdown menu inside
+   the card. Gradio also sets overflow:hidden on .block, so the menu is clipped
+   and the other windows cannot be clicked. */
+.gradio-container .block:has(input[role="listbox"]) {
+  overflow: visible !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.gradio-container .block:focus-within {
+  position: relative;
+  z-index: 40;
+}
+
 /* ---------- Progress: glass strip with glow ---------- */
 .job-progress-wrap { margin: 0 0 0.6rem; }
 

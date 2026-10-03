@@ -13,9 +13,11 @@ from yue_studio.capture import (
     assess_pcm16,
     capture_targets,
     floats_to_pcm16,
+    on_current_desktop,
     pcm_from_mix,
     require_usable,
     target_pid,
+    window_listed,
     write_pcm16_wav,
 )
 
@@ -80,6 +82,46 @@ def test_session_without_a_window_is_still_listed():
     assert targets[0].pid == 4
     assert targets[0].label == "cloudmusic.exe (4)"
     assert target_pid("4") == 4
+
+
+def test_other_desktop_window_stays_in_the_list():
+    targets = capture_targets(
+        [SessionInfo(10, "chrome.exe")],
+        [
+            WindowInfo(3, 4, "YouTube", on_current_desktop=False),
+            WindowInfo(5, 4, "Yue Studio"),
+        ],
+        {10: 4},
+    )
+    assert [item.label for item in targets] == [
+        "Yue Studio — chrome.exe (10)",
+        "YouTube（其他桌面） — chrome.exe (10)",
+    ]
+    assert len({item.value for item in targets}) == 2
+
+
+def test_shell_window_is_not_used_as_the_app_label():
+    targets = capture_targets(
+        [SessionInfo(10, "chrome.exe")],
+        [WindowInfo(1, 99, "Program Manager")],
+        {10: 99},
+        stop_pids={99},
+    )
+    assert targets[0].label == "chrome.exe (10)"
+    assert targets[0].pid == 10
+
+
+def test_shell_cloak_keeps_other_desktops_and_drops_app_cloak():
+    assert window_listed(True, 0)
+    assert window_listed(True, 2)
+    assert window_listed(True, 2 | 4)
+    assert not window_listed(True, 1)
+    assert not window_listed(True, 1 | 2)
+    assert not window_listed(False, 0)
+    assert on_current_desktop(0)
+    assert on_current_desktop(4)
+    assert not on_current_desktop(2)
+    assert not on_current_desktop(2 | 4)
 
 
 def test_target_pid_rejects_a_blank_choice():

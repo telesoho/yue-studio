@@ -31,11 +31,17 @@ class SessionInfo:
     display_name: str = ""
 
 
+# DWMWA_CLOAKED. Shell cloak is how Windows hides a window on another virtual desktop.
+DWM_CLOAKED_APP = 0x00000001
+DWM_CLOAKED_SHELL = 0x00000002
+
+
 @dataclass(frozen=True)
 class WindowInfo:
     hwnd: int
     pid: int
     title: str
+    on_current_desktop: bool = True
 
 
 @dataclass(frozen=True)
@@ -64,7 +70,18 @@ def target_pid(value) -> int:
     return int(head)
 
 
-def capture_targets(sessions, windows, parents) -> list[CaptureTarget]:
+def window_listed(visible: bool, cloaked: int) -> bool:
+    """Keep windows on other virtual desktops. Drop windows the app itself cloaked."""
+    if not visible:
+        return False
+    return not (int(cloaked) & DWM_CLOAKED_APP)
+
+
+def on_current_desktop(cloaked: int) -> bool:
+    return not (int(cloaked) & DWM_CLOAKED_SHELL)
+
+
+def capture_targets(sessions, windows, parents, stop_pids=()) -> list[CaptureTarget]:
     """One row per visible window. The recorded pid stays the audio session's."""
     by_pid: dict[int, list[WindowInfo]] = {}
     for window in windows:
@@ -72,7 +89,11 @@ def capture_targets(sessions, windows, parents) -> list[CaptureTarget]:
         if not title:
             continue
         by_pid.setdefault(window.pid, []).append(
-            WindowInfo(int(window.hwnd), int(window.pid), title))
+            WindowInfo(
+                int(window.hwnd), int(window.pid), title, bool(window.on_current_desktop),
+            ))
+    for pid, items in by_pid.items():
+        by_pid[pid] = sorted(items, key=lambda item: not item.on_current_desktop)
     targets = []
     seen = set()
     for session in _dedupe_sessions(sessions):
@@ -80,13 +101,16 @@ def capture_targets(sessions, windows, parents) -> list[CaptureTarget]:
             continue
         seen.add(session.pid)
         name = session.process_name or f"pid {session.pid}"
-        found = _display_windows(session.pid, by_pid, parents)
+        found = _display_windows(session.pid, by_pid, parents, stop_pids)
         if not found:
             targets.append(CaptureTarget(
                 session.pid, f"{name} ({session.pid})", name, str(session.pid)))
             continue
         for window in found:
-            label = f"{window.title} — {name}"
+            title = window.title
+            if not window.on_current_desktop:
+                title = f"{title}（其他桌面）"
+            label = f"{title} — {name}"
             if window.pid != session.pid:
                 label = f"{label} ({session.pid})"
             value = str(session.pid) if len(found) == 1 else f"{session.pid}:{window.hwnd}"
@@ -199,8 +223,9 @@ def list_playing_windows() -> list[CaptureTarget]:
     sessions = _active_sessions()
     if not sessions:
         return []
-    return capture_targets(sessions, _visible_windows(), _parent_pids(
-        session.pid for session in sessions))
+    parents = _parent_pids(session.pid for session in sessions)
+    return capture_targets(
+        sessions, _visible_windows(), parents, _shell_pids(parents))
 
 
 class Recorder:
@@ -385,10 +410,14 @@ def _dedupe_sessions(sessions) -> list[SessionInfo]:
     return [chosen[pid] for pid in order]
 
 
-def _display_windows(pid, windows_by_pid, parents) -> list[WindowInfo]:
+def _display_windows(pid, windows_by_pid, parents, stop_pids=()) -> list[WindowInfo]:
+    stop = {int(item) for item in (stop_pids or ())}
     seen = set()
     current = pid
     while current and current not in seen:
+        # explorer's Program Manager is not the app that is playing audio.
+        if current != pid and current in stop:
+            return []
         seen.add(current)
         found = windows_by_pid.get(current) or []
         if found:
@@ -445,6 +474,22 @@ def _parent_pids(pids) -> dict[int, int | None]:
     return mapping
 
 
+def _shell_pids(parents) -> set[int]:
+    import psutil
+
+    pids = {int(pid) for pid in parents if int(pid) > 0}
+    pids.update(int(parent) for parent in parents.values() if parent)
+    shell = set()
+    for pid in pids:
+        try:
+            name = psutil.Process(pid).name()
+        except (psutil.Error, OSError, ValueError):
+            continue
+        if name.lower() == "explorer.exe":
+            shell.add(pid)
+    return shell
+
+
 def _visible_windows() -> list[WindowInfo]:
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.IsWindowVisible.argtypes = [HWND]
@@ -467,11 +512,14 @@ def _visible_windows() -> list[WindowInfo]:
     def each(hwnd, _lparam):
         if not user32.IsWindowVisible(hwnd):
             return True
+        cloaked = 0
         if dwmapi is not None:
-            cloaked = DWORD()
-            if dwmapi.DwmGetWindowAttribute(hwnd, 14, byref(cloaked), ctypes.sizeof(cloaked)) == 0:
-                if cloaked.value:
-                    return True
+            cloaked_value = DWORD()
+            if dwmapi.DwmGetWindowAttribute(
+                    hwnd, 14, byref(cloaked_value), ctypes.sizeof(cloaked_value)) == 0:
+                cloaked = int(cloaked_value.value)
+        if not window_listed(True, cloaked):
+            return True
         length = user32.GetWindowTextLengthW(hwnd)
         if length <= 0:
             return True
@@ -483,7 +531,8 @@ def _visible_windows() -> list[WindowInfo]:
         pid = DWORD()
         user32.GetWindowThreadProcessId(hwnd, byref(pid))
         if pid.value:
-            found.append(WindowInfo(int(hwnd), int(pid.value), title))
+            found.append(WindowInfo(
+                int(hwnd), int(pid.value), title, on_current_desktop(cloaked)))
         return True
 
     callback = ctypes.WINFUNCTYPE(BOOL, HWND, LPARAM)(each)

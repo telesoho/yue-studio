@@ -1064,6 +1064,7 @@ def build_app():
                             choices=[],
                             value=None,
                             interactive=True,
+                            filterable=False,
                         )
                         capture_map = gr.State({})
                         with gr.Row():
