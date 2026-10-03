@@ -61,7 +61,9 @@ uv run yue-studio
 
 ## 识谱
 
-「识谱」页上传整首歌。SheetSage2 以 `full` 写出带和弦的旋律谱（`score.abc`），然后在独立的 Python 3.12 环境 `.venv-lyrics` 里用人声分离（Demucs `htdemucs`）和 faster-whisper `large-v3`（int8）识别歌词。首次运行会创建该环境并下载权重到 `models/`；三者不会同时留在显存里。需要本机 FFmpeg。可选：`$env:YUE_STUDIO_LYRICS_PYTHON` 指向已有解释器。
+「识谱」页上传整首歌，也可以先选正在出声的窗口再录。点「刷新」列出当前正在播放的程序窗口，点「开始录制」，放完后点「停止录制」。录音会出现在源音频里，可以回放。选好歌词语言和硬件参数后，再点「开始识谱」。录的是该窗口所属进程及其子进程的声音，不是整台电脑的混音；浏览器不能按标签拆开。加密或独占输出可能录成静音，停止后会在录音栏说明，识谱日志里也会记下。录音先写成 `outputs/_capture/` 里的 WAV，识谱复制为 `source.wav` 后删掉这份临时文件。
+
+SheetSage2 以 `full` 写出带和弦的旋律谱（`score.abc`），然后在独立的 Python 3.12 环境 `.venv-lyrics` 里用人声分离（Demucs `htdemucs`）和 faster-whisper `large-v3`（int8）识别歌词。首次运行会创建该环境并下载权重到 `models/`；三者不会同时留在显存里。需要本机 FFmpeg。可选：`$env:YUE_STUDIO_LYRICS_PYTHON` 指向已有解释器。
 
 人声分离失败时改用原混音继续识别。歌词识别失败时仍保留曲谱和和弦。对齐结果写入同目录的 `lyrics.txt` 与 `alignment.json`。上传的源音频按原格式复制为同目录的 `source.<扩展名>`，不重新编码。保存的 `score.abc` 不含歌词行；谱面上的词只用于显示。请对照原曲校对音高、和弦和歌词。
 

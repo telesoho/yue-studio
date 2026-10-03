@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
     "gradio>=5.0,<6",
+    "pycaw>=20240210",
     "yue2-infer",
 ]
 

@@ -27,6 +27,14 @@ from .invoke import (
 )
 from .history import TABLE_HEADERS, delete_entry, history_table, load_entry
 from .jobs import song_id
+from .capture import (
+    SILENCE_NOTE,
+    CaptureError,
+    Recorder,
+    discard_capture,
+    list_playing_windows,
+    new_capture_path,
+)
 from .models import (
     CATALOG_HEADERS,
     LICENSE_NOTE,
@@ -54,6 +62,7 @@ from .theme import CSS, FORCE_DARK, THEME
 
 RUNNER: StudioRunner | None = None
 SNAPSHOT = None
+RECORDER = Recorder()
 
 
 def current_snapshot():
@@ -492,19 +501,44 @@ def transcribe_cover(audio, abc_file, abc_text, task_label,
         yield result["directory"], score_html, abc, chords, progress_html, log_text + "\n" + note
 
 
+def _capture_context(audio_path, meta) -> dict | None:
+    info = meta if isinstance(meta, dict) else None
+    saved = (info or {}).get("path")
+    if not info or not saved or not audio_path or Path(saved) != Path(audio_path):
+        return None
+    name = Path(str(info.get("process_name") or "capture")).stem
+    lines = [
+        f"window={info.get('label') or ''}",
+        f"pid={info.get('pid') or ''}",
+    ]
+    note = "\n" + "\n".join(lines)
+    if info.get("silent"):
+        note += "\n\n" + SILENCE_NOTE
+    return {
+        "identifier": song_id(name, fallback="capture"),
+        "note": note,
+    }
+
+
 def transcribe_score_song(audio, language,
-                          profile, gpu_device, budget, quantization, offload_ar, vae_core_frames):
+                          profile, gpu_device, budget, quantization, offload_ar, vae_core_frames,
+                          capture_meta=None):
     sync_hardware(profile, gpu_device, budget, quantization, offload_ar, vae_core_frames)
     audio_path = _file_path(audio)
     if not audio_path:
         raise gr.Error("请上传音频")
+    captured = _capture_context(audio_path, capture_meta)
     header = "=== 命令 ===\n识谱（SheetSage2 转谱，随后分离人声并识别歌词）\n\n=== 参数 ===\n" + (
         f"audio={audio_path}\nlanguage={language or 'zh'}\ntask=full"
     )
+    if captured:
+        header += captured["note"]
+    identifier = captured["identifier"] if captured else "score"
     for phase, log_text, payload, progress_html in _logged_work(
             header,
             lambda on_status: get_runner().transcribe_score(
-                audio_path, language=language or "zh", on_status=on_status)):
+                audio_path, language=language or "zh", identifier=identifier,
+                on_status=on_status)):
         if phase == "running":
             yield (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
                    progress_html, log_text, gr.skip(), gr.skip(), gr.skip())
@@ -523,11 +557,93 @@ def transcribe_score_song(audio, language,
         source = result.get("source")
         if source:
             note = f"源音频: {source}\n" + note
+        if captured and source and Path(source).is_file() and Path(source) != Path(audio_path):
+            discard_capture(audio_path)
         yield (
             result["directory"], score_html, abc, chords, result.get("lyrics") or "",
             progress_html, log_text + "\n" + note, abc, result.get("display_abc") or "",
             source,
         )
+
+
+def _capture_mapping(targets):
+    return {
+        item.value: {
+            "label": item.label,
+            "process_name": item.process_name,
+            "pid": item.pid,
+        }
+        for item in targets
+    }
+
+
+def refresh_capture_targets(current):
+    try:
+        targets = list_playing_windows()
+    except CaptureError as exc:
+        return gr.update(choices=[], value=None), str(exc), {}
+    choices = [(item.label, item.value) for item in targets]
+    values = [value for _label, value in choices]
+    selected = current if current in values else (values[0] if values else None)
+    recording = RECORDER.status()
+    if recording:
+        note = recording
+    elif not choices:
+        note = "没有正在出声的窗口。"
+    else:
+        note = f"找到 {len(choices)} 个正在出声的窗口。"
+    return gr.update(choices=choices, value=selected), note, _capture_mapping(targets)
+
+
+def on_transcribe_tab(evt: gr.SelectData, current):
+    if evt.value not in {"transcribe", "识谱"}:
+        return gr.skip(), gr.skip(), gr.skip()
+    return refresh_capture_targets(current)
+
+
+def start_window_capture(choice, mapping):
+    info = (mapping or {}).get(choice)
+    if not info:
+        raise gr.Error("请先刷新并选择正在播放的窗口。")
+    try:
+        RECORDER.start(
+            int(info["pid"]), info["process_name"], info["label"], new_capture_path())
+    except CaptureError as exc:
+        raise gr.Error(str(exc)) from exc
+    return (
+        gr.update(interactive=False),
+        gr.update(interactive=True),
+        RECORDER.status() or "正在录制…",
+    )
+
+
+def poll_window_capture():
+    text = RECORDER.status()
+    if text is None:
+        return gr.skip()
+    return text
+
+
+def stop_window_capture():
+    idle_buttons = (gr.update(interactive=True), gr.update(interactive=False))
+    try:
+        recording = RECORDER.stop()
+    except CaptureError as exc:
+        return gr.skip(), *idle_buttons, str(exc), gr.skip()
+    note = (
+        f"已录制 {recording.duration:.1f} 秒。"
+        "选择歌词语言和硬件参数后，点「开始识谱」。"
+    )
+    if recording.silent:
+        note = SILENCE_NOTE + "\n" + note
+    meta = {
+        "path": str(recording.path),
+        "silent": bool(recording.silent),
+        "process_name": recording.process_name,
+        "label": recording.label,
+        "pid": recording.pid,
+    }
+    return str(recording.path), *idle_buttons, note, meta
 
 
 def on_score_abc_edit(abc, clean, display):
@@ -943,6 +1059,23 @@ def build_app():
                 score_display = gr.Textbox(value="", visible=False)
                 with gr.Row(equal_height=False):
                     with gr.Column(scale=5, min_width=320):
+                        capture_window = gr.Dropdown(
+                            label="正在播放的窗口",
+                            choices=[],
+                            value=None,
+                            interactive=True,
+                        )
+                        capture_map = gr.State({})
+                        with gr.Row():
+                            capture_refresh = gr.Button("刷新")
+                            capture_start = gr.Button("开始录制")
+                            capture_stop = gr.Button("停止录制", interactive=False)
+                        capture_note = gr.Textbox(
+                            label="录音", lines=2, interactive=False,
+                            value="选择正在出声的窗口后开始录制。录完后选择参数，再点「开始识谱」。",
+                        )
+                        capture_meta = gr.State(None)
+                        capture_timer = gr.Timer(1)
                         score_audio = gr.Audio(
                             label="源音频（可回放）", type="filepath", sources=["upload"],
                         )
@@ -971,10 +1104,31 @@ def build_app():
                         )
                 score_btn.click(
                     transcribe_score_song,
-                    [score_audio, score_language, *hw_inputs],
+                    [score_audio, score_language, *hw_inputs, capture_meta],
                     [score_job, score_view, score_abc, score_chords, score_lyrics,
                      score_progress, score_status, score_clean, score_display, score_audio],
                     show_progress="minimal",
+                )
+                capture_refresh.click(
+                    refresh_capture_targets,
+                    [capture_window],
+                    [capture_window, capture_note, capture_map],
+                    queue=False,
+                )
+                capture_start.click(
+                    start_window_capture,
+                    [capture_window, capture_map],
+                    [capture_start, capture_stop, capture_note],
+                    queue=False,
+                )
+                capture_stop.click(
+                    stop_window_capture,
+                    None,
+                    [score_audio, capture_start, capture_stop, capture_note, capture_meta],
+                    queue=False,
+                )
+                capture_timer.tick(
+                    poll_window_capture, None, capture_note, queue=False,
                 )
                 score_abc.blur(
                     on_score_abc_edit,
@@ -1053,6 +1207,11 @@ def build_app():
 
         studio_tabs.select(
             on_history_tab, None, [hist_table, hist_paths, hist_note],
+        )
+        studio_tabs.select(
+            on_transcribe_tab, [capture_window],
+            [capture_window, capture_note, capture_map],
+            queue=False,
         )
         profile.change(on_profile, [profile, gpu_device], hw_event_out)
         gpu_device.change(on_profile, [profile, gpu_device], hw_event_out)

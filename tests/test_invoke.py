@@ -5,12 +5,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from yue_studio.app import (
+    _capture_context,
     _download_log_line,
     _logged_work,
     _progress_markup,
     download_resource,
+    stop_window_capture,
     transcribe_cover,
 )
+from yue_studio.capture import SILENCE_NOTE, Recording
 from yue_studio.runner import PipelineSettings
 from yue_studio.invoke import (
     InvocationLog,
@@ -244,3 +247,30 @@ def test_logged_work_streams_status_and_stderr():
     assert any("4/10" in markup for markup in progress_updates)
     assert "完成" in progress_updates[-1]
     assert progress_updates[-1] != text
+
+
+def test_stop_capture_loads_audio_without_transcribing(monkeypatch, tmp_path):
+    path = tmp_path / "capture.wav"
+    path.write_bytes(b"RIFF")
+    recording = Recording(
+        path=path, pid=42, label="Player — chrome", process_name="chrome.exe",
+        duration=4.2, silent=True,
+    )
+
+    class Fake:
+        def stop(self):
+            return recording
+
+    monkeypatch.setattr("yue_studio.app.RECORDER", Fake())
+    audio, start, stop, note, meta = stop_window_capture()
+    assert audio == str(path)
+    assert start["interactive"] is True
+    assert stop["interactive"] is False
+    assert "开始识谱" in note
+    assert SILENCE_NOTE in note
+    context = _capture_context(audio, meta)
+    assert context["identifier"] == "chrome"
+    assert "pid=42" in context["note"]
+    assert "window=Player — chrome" in context["note"]
+    assert _capture_context(str(tmp_path / "other.wav"), meta) is None
+    assert _capture_context(audio, None) is None
